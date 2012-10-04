@@ -254,10 +254,10 @@ def do_stats():
 
 		print "| %-14s (%6s)" % (colored(inst,"green"),colored(capacity,"yellow")),
 		print "| %5s " % colored(config.dev,"green"),
-		print "| %8d (%3s)" % (colored(cached,"green"),colored(percent,"yellow")),
-		print "| %8d (%3s)" % (colored(dirtyb,"green"),colored(dirtyp,"yellow")),
-		print "| %8d (%3s)" % (colored(total_reads,"green"),colored(rp,"yellow")),
-		print "| %8d (%3s)" % (colored(total_writes,"green"),colored(wp,"yellow"))
+		print "| %8s (%3s)" % (colored(cached,"green"),colored(percent,"yellow")),
+		print "| %8s (%3s)" % (colored(dirtyb,"green"),colored(dirtyp,"yellow")),
+		print "| %8s (%3s)" % (colored(total_reads,"green"),colored(rp,"yellow")),
+		print "| %8s (%3s)" % (colored(total_writes,"green"),colored(wp,"yellow"))
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
