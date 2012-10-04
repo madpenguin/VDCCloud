@@ -183,10 +183,10 @@ def do_stats():
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	print "| %s %s" % (colored("%-14s" % "Instance"	,"blue"),colored("%8s" % "Size ","green")),
 	print "| %s" 	%  colored("%-5s"  % "Raw"	,"blue"),
-	print "| %s" 	%  colored("%-15s" % "Cached"	,"blue"),
-	print "| %s" 	%  colored("%-15s" % "Dirty"	,"blue"),
-	print "| %s"	%  colored("%-15s" % "Read"	,"blue"),
-	print "| %s"	%  colored("%-15s" % "write"	,"blue")+" |"
+	print "| %s" 	%  colored("%15s" % "Cached"	,"blue"),
+	print "| %s" 	%  colored("%15s" % "Dirty"	,"blue"),
+	print "| %s"	%  colored("%15s" % "Read"	,"blue"),
+	print "| %s"	%  colored("%15s" % "write"	,"blue")+" |"
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	for inst in getInstances(): 
 		config = doLoad(inst)
@@ -196,7 +196,7 @@ def do_stats():
 		else:	config.ssd,config.dev = ['None','None']
 
 		if not isRunning(inst):
-			print "| %s (%s) |" % (colored("%-14s" % inst,"blue"),colored("%-6s" % "down","red"))
+			print "| %s (%s) |" % (colored("%-14s" % inst,"blue"),colored("%6s" % "down","red"))
 			continue
 
 		stats = ""
@@ -254,7 +254,7 @@ def do_stats():
 		print "| %s (%%%s)"   % (colored("%8d" 	% cached,"green"),	colored("%3d" % percent,"yellow")),
 		print "| %s (%%%s)"   % (colored("%8d" 	% dirtyb,"green"),	colored("%3d" % dirtyp,"yellow")),
 		print "| %s (%%%s)"   % (colored("%8d" 	% total_reads,"green"),	colored("%3d" % rp,"yellow")),
-		print "| %s (%%%s)"   % (colored("%8d" 	% total_writes,"green"),colored("%3d" % wp,"yellow"))
+		print "| %s (%%%s)"   % (colored("%8d" 	% total_writes,"green"),colored("%3d" % wp,"yellow"))+" |"
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
