@@ -640,6 +640,7 @@ def do_pingpong():
 ###############################################################################
 #
 def do_usage():
+	print "Version: 0.0.1"
 	print "Usage:",
 	print "%s {start|stop|stats|clearstats|remove|sync|cacheon|cacheoff|migrate|pingpong}" % (argv[0])
 	exit(1)
