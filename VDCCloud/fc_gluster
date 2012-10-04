@@ -1,12 +1,21 @@
 #!/usr/bin/python
 #
+#	fc_gluster - service control routines
+#
+#	Mad Pengiun <madpenguin@linux.co.uk> (c) 2012
+#
 #	TODO:: convert /etc/fc_gluster into a persistent mapping
 #	TODO:: modprobe for flashcache and nbd @ start
 #	TODO:: fix auto-boot on node1 and node2 re; mount gluster
 # 	TODO:: submit patches for FC re; more stats info
+#	TODO:: hive off code into Library
 #
-from sys import argv,exit
-#######
+###############################################################################
+#
+#	External Routines and Constants
+#
+###############################################################################
+#
 import sys
 import socket
 import subprocess as sub
@@ -15,32 +24,28 @@ import stat
 import time
 import shelve
 import libvirt
-from libvirt import VIR_MIGRATE_LIVE,VIR_MIGRATE_PEER2PEER,VIR_MIGRATE_PERSIST_DEST,VIR_MIGRATE_UNDEFINE_SOURCE
-###############################################################################
 #
-#	INITIALISATION
+#	Useful constants from libvirt
 #
-###############################################################################
-CONFIG_DIR = '/etc/fc_gluster/'
-HOSTNAME = os.uname()[1]
-DATABASE = '/etc/flashcache.dbm'
-FALLOW_DELAY = 300
+from libvirt import VIR_MIGRATE_LIVE		# make migrations "live"
+from libvirt import VIR_MIGRATE_PEER2PEER	# migrate directly, !via libirt
+from libvirt import VIR_MIGRATE_PERSIST_DEST	# make the result persistent
+from libvirt import VIR_MIGRATE_UNDEFINE_SOURCE	# remove froms src on completion
+from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
 #
-#	Routine to obtain colour codes ...
+#	Handy shortcuts
 #
-def getColor(number):
-	""" there must be a better way to do this!! """
-	pipe = sub.Popen("tput setaf "+str(number),bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
-	return pipe.communicate()[0]
+from sys 	import argv,exit
+from textcolor 	import colored
 #
+#	Local Constants
 #
+CONFIG_DIR 	= '/etc/fc_gluster/'
+DATABASE 	= '/etc/flashcache.dbm'
+HOSTNAME 	= os.uname()[1]
+FALLOW_DELAY 	= 300
 #
-sys.path.append(CONFIG_DIR)
-red 	= getColor(1)
-blue 	= getColor(4)
-yellow 	= getColor(3)
-green 	= getColor(2)
-x 		= getColor(7)
+sys.path.append(CONFIG_DIR)	# TODO:: remove!
 #
 #	Open Persistent Database
 #
@@ -54,7 +59,7 @@ def isKVMRunning(io,inst):
 	for id in io.listDomainsID():
 		domain = io.lookupByID(id)
 		info = domain.info()
-		if info[0] == libvirt.VIR_DOMAIN_RUNNING: active.append(domain.name())
+		if info[0] == VIR_DOMAIN_RUNNING: active.append(domain.name())
 	return inst in active
 #
 ###############################################################################
@@ -105,29 +110,30 @@ def doLoad(inst):
 #
 def logBegin(text):
 	""" start logging a line to stdout """
-	print "%s * %s%s%s%s" % (blue,x,green,text,x),
+	print colored("*","blue"),
+	print colored("text","green"),
 	sys.stdout.flush()
 #
 ###############################################################################
 #
 def logEnd(text,ok):
 	""" stop logging and print a status message """
-	templ = "[%s%s%s]"
 	if ok:
-			print templ % (green,text,x)
-	else:	print templ % (red,text,x)
+		color = "green"
+	else:	color = "red"
+	print "["+colored(text,color)+"]"
 #
 ###############################################################################
 #
 def logMiddle(text,col):
-	print "[%s%s%s] " % (col,text,x),
+	print "["+colored(text,col)+"]",
 	sys.stdout.flush()
 #
 ###############################################################################
 #
 def logYN(text):
 	while True:
-		logBegin(text+" %s(y/N)%s " % (yellow,x))
+		logBegin(text+colored(" (y/N) ",yellow))
 		choice = raw_input().lower()
 		if not choice in ['y','N','']: continue
 		if choice == 'y': return True
@@ -144,7 +150,7 @@ def setParam(inst,config,param,v):
 	""" set a flashcache parameter """
 	path = "/proc/sys/dev/flashcache/"+inst+"+"+config.dev+"/"+param
 	if os.path.exists(path):
-		print "[%s%s%s=%s%s] " % (yellow,param,green,v,x),
+		print "["+colored(param,"yellow")+"="+colored(v,"green")+"]"
 		io = open(path,"w")
 		io.write(str(v)+"\n")
 		io.close()
@@ -175,7 +181,7 @@ class Settings():
 def do_stats():
 	""" print out our status in tabular format """
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
-	print "| %s%-14s%s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (blue,"Instance",x,green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
+	print "| %-14s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (colored("Instance",blue),green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	for inst in getInstances(): 
 		config = doLoad(inst)
@@ -254,7 +260,7 @@ def do_stop():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Stopping %s%-12s%s :: ' % (yellow,inst,x))
+		logBegin('Stopping %s :: ' % inst)
 
 		if not isRunning(inst):
 			logEnd('already stopped',False)
@@ -269,7 +275,7 @@ def do_stop():
 		if run("/sbin/dmsetup remove %s" % inst):
 			logEnd('dmsetup Failed',False)
 		else: 	
-			logMiddle('dm stopped',green)
+			logMiddle('dm stopped',"green")
 			if run("qemu-nbd -d /dev/"+config.dev):
 				logMiddle(config.dev,red)
 			else:	
@@ -284,7 +290,7 @@ def do_remove():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Removing %s%-12s%s :: ' % (yellow,inst,x))
+		logBegin('Removing %s% :: ' % inst)
 
 		if not isRunning(inst):
 			logEnd('already stopped',False)
@@ -300,11 +306,11 @@ def do_remove():
 			logEnd('dmsetup Failed',False)
 			continue
 		else: 	
-			logMiddle('dm stopped',green)
+			logMiddle('dm stopped',"green")
 			if run("qemu-nbd -d /dev/"+config.dev):
 				logMiddle(config.dev,red)
 			else:	
-				logMiddle(config.dev,blue)
+				logMiddle(config.dev,"blue")
 
 		setParam(inst,config,"do_sync",1)
 
@@ -319,7 +325,7 @@ def do_start():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Starting %s%-12s%s :: ' % (yellow,inst,x))
+		logBegin('Starting %s :: ' % inst)
 
 		blockdev = "/dev/mapper/"+inst
 		if os.path.exists(blockdev):
@@ -333,9 +339,9 @@ def do_start():
 
 		if db.has_key(inst):
 			config.ssd,config.dev = db[inst]
-			logMiddle('old cache',blue)
+			logMiddle('old cache',"blue")
 		else:
-			logMiddle('new cache',green)
+			logMiddle('new cache',"green")
 			used = []
 			config.ssd = "/dev/"+config.VG+"/"+inst
 			for entry in db:
@@ -352,29 +358,29 @@ def do_start():
 			logEnd(config.dev,Fail)
 			continue
 
-		logMiddle(config.dev,blue)
+		logMiddle(config.dev,"blue")
 
 		if os.path.exists(config.ssd):
-			logMiddle('load',blue)
+			logMiddle('load',"blue")
 			if run("/sbin/flashcache_load "+config.ssd+" "+inst):
 				logEnd('fail',False)
 				continue
 		else:
-			logMiddle('lvm',blue)
+			logMiddle('lvm',"blue")
 			if run("lvcreate -L%dG -n%s %s" % (config.SIZE,inst,config.VG)):
 				logEnd('fail',False)
 				continue
 			
-			logMiddle('ndb',blue)
+			logMiddle('ndb',"blue")
 			if run("/sbin/flashcache_create -p back -s%dg %s %s /dev/%s" % (config.SIZE,inst,config.ssd,config.dev)):
 				logEnd('fail',False)
 				continue
 
-		logMiddle('ReadAhead::8192',blue)
-		if run("blockdev --setra 8192 /dev/mapper/"+inst): logMiddle('fail',red)
+		logMiddle('ReadAhead::8192',"blue")
+		if run("blockdev --setra 8192 /dev/mapper/"+inst): logMiddle('fail',"red")
 		setParam(inst,config,"reclaim_policy",1)
 		setParam(inst,config,"fallow_delay",FALLOW_DELAY)
-		logEnd('Ok',green)
+		logEnd('Ok',"green")
 #
 ###############################################################################
 #
@@ -383,7 +389,7 @@ def do_sync():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Synchronizing %s%-12s%s' % (yellow,inst,x))
+		logBegin('Synchronizing %s' % inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,"fallow_delay",FALLOW_DELAY)
@@ -399,7 +405,7 @@ def do_nosync():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Setting local cache mode on %s%-12s%s' % (yellow,inst,x))
+		logBegin('Setting local cache mode on %s' % inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,"do_sync",1)
@@ -415,7 +421,7 @@ def do_cache(v):
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Change caching %s%-12s%s' % (yellow,inst,x))
+		logBegin('Change caching %s' % inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,'cache_all',v)
@@ -444,7 +450,7 @@ def do_clearstats():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Clearing stats %s%-12s%s' % (yellow,inst,x))
+		logBegin('Clearing stats %s' % inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,'zero_stats',1)
@@ -472,7 +478,7 @@ def do_migrate(pingpong=False):
 
 	if not isKVMRunning(src_conn,inst):
 		if not pingpong:
-			logMiddle('Instance is not running',blue)
+			logMiddle('Instance is not running',"blue")
 			logEnd('Fail',False)
 			return
 
@@ -491,7 +497,7 @@ def do_migrate(pingpong=False):
 	logBegin('Validating destination')
 	dst_conn = libvirt.open("qemu+ssh://"+dest+"/system")
 	if isKVMRunning(dst_conn,inst):
-		logMiddle('Instance is already running',blue)
+		logMiddle('Instance is already running',"blue")
 		logEnd('Fail',False)
 		return
 
@@ -504,7 +510,7 @@ def do_migrate(pingpong=False):
 	setParam(inst,config,"do_sync",1)
 	logEnd('Ok',True)
 
-	logBegin('Checking mapper on %s%s%s' % (yellow,dest,x))
+	logBegin('Checking mapper on %s' % dest)
 	blockdev = "/dev/mapper/"+inst
 
 	status,result = remote('ssh root@'+dest+' "if [ -e '+blockdev+' ]; then echo -n 1; else echo -n 0; fi"')
@@ -521,7 +527,7 @@ def do_migrate(pingpong=False):
 			logEnd('Fail',False);
 			return
 
-		logBegin('Shutting down Mapper on %s%s%s' % (yellow,dest,x))
+		logBegin('Shutting down Mapper on %s' % dest)
 		status,result = remote('ssh root@'+dest+' "service fc_gluster remove '+inst+'"')
 		if status:
 			logEnd('Failed',False)
@@ -530,7 +536,7 @@ def do_migrate(pingpong=False):
 	
 		logEnd('Ok',True)
 
-	logBegin('Creating Mapper on %s%s%s' % (yellow,dest,x))
+	logBegin('Creating Mapper on %s' % dest)
 	status,result = remote('ssh root@'+dest+' "service fc_gluster start '+inst+'"')
 	if status:
 		logEnd('Failed',False)
@@ -545,8 +551,8 @@ def do_migrate(pingpong=False):
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 		result = pipe.communicate()
 		if pipe.returncode:
-			print " %s*%s - FAILURE RUNNING DMSETUP for %s%s%s" % (red,x,yellow,inst,x)
-			sys.exit(0)
+			print " * - FAILURE RUNNING DMSETUP for %s" % inst)
+			exit(0)
 	
 		result = result[0]
 		result = result.expandtabs(0).split("\n")
@@ -574,7 +580,7 @@ def do_migrate(pingpong=False):
 			logEnd('Ok',True)
 			break
 
-		logMiddle('wait',blue)
+		logMiddle('wait',"blue")
 		setParam(inst,config,"do_sync",1)
 		time.sleep(1)
 
@@ -582,7 +588,7 @@ def do_migrate(pingpong=False):
 	delay(10)
 	logEnd('Ok',True)
 
-	logBegin('Migrating %s%s%s to %s%s%s' % (yellow,inst,x, yellow,dest,x))
+	logBegin('Migrating %s to %s' % inst,dest)
 
 	flags = VIR_MIGRATE_LIVE|VIR_MIGRATE_PEER2PEER|VIR_MIGRATE_PERSIST_DEST|VIR_MIGRATE_UNDEFINE_SOURCE
 	uri = "qemu+ssh://%s/system" % (dest)
@@ -634,24 +640,24 @@ def do_pingpong():
 ###############################################################################
 #
 def do_usage():
-	print "Usage:"
+	print "Usage:",
 	print "%s {start|stop|stats|clearstats|remove|sync|cacheon|cacheoff|migrate|pingpong}" % (argv[0])
 	exit(1)
 #
 ###############################################################################
 #
 routines = {
-	'stats'			:do_stats,
+	'stats'		:do_stats,
 	'clearstats'	:do_clearstats,
-	'stop' 			:do_stop,
-	'start'			:do_start,
-	'remove'		:do_remove,
-	'sync'			:do_sync,
-	'nosync'		:do_nosync,
-	'cacheoff'		:do_cacheoff,
-	'cacheon'		:do_cacheon,
-	'migrate'		:do_migrate,
-	'pingpong'		:do_pingpong,
+	'stop' 		:do_stop,
+	'start'		:do_start,
+	'remove'	:do_remove,
+	'sync'		:do_sync,
+	'nosync'	:do_nosync,
+	'cacheoff'	:do_cacheoff,
+	'cacheon'	:do_cacheon,
+	'migrate'	:do_migrate,
+	'pingpong'	:do_pingpong,
 }
 
 if len(argv)<2:	
