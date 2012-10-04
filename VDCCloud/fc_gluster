@@ -258,7 +258,7 @@ def do_stats():
 		read = "%s%8d%s (%s%3d%%%s) | " % (colored(total_reads,"green"),colored(rp,"yellow"))
 		writ = "%s%8d%s (%s%3d%%%s) | " % (colored(total_writes,"green"),colored(wp,"yellow"))
 
-		print "| %s%-14s%s (%s%6s%s) | %s%-5s%s | " % (colored(inst,"green"),colored(capacity,"yellow"),colored(config.dev,"green")+cach+dirt+read+writ
+		print "| %s%-14s%s (%s%6s%s) | %s%-5s%s | " % (colored(inst,"green"),colored(capacity,"yellow"),colored(config.dev,"green"))+cach+dirt+read+writ
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
