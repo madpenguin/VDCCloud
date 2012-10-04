@@ -215,7 +215,7 @@ def do_stats():
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 		result = pipe.communicate()
 		if pipe.returncode:
-			print "* FAILURE RUNNING DMSETUP for %s" % inst)
+			print "* FAILURE RUNNING DMSETUP for %s" % inst
 			sys.exit(0)
 
 		result = result[0]
