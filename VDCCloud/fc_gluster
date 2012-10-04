@@ -183,7 +183,7 @@ def do_stats():
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	#print "| %-14s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (colored("Instance","blue"),green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
 	
-	print "| %-12s (%6s)" % (colored("Instance","blue"),colored("","green")).
+	print "| %-12s (%6s)" % (colored("Instance","blue"),colored("","green")),
 	print "| %-5s"  % colored("Raw"		,"blue"),
 	print "| %-15s" % colored("Cached"	,"blue"),
 	print "| %-15s" % colored("Dirty"	,"blue"),
@@ -252,7 +252,7 @@ def do_stats():
 		total_writes = z.ssd_writes + z.disk_writes + 1
 		wp = 100 * float(z.ssd_writes) / float(total_writes)
 
-		print "| %-14s (%6s)" % (colored(inst,"green"),colored(capacity,"yellow"),
+		print "| %-14s (%6s)" % (colored(inst,"green"),colored(capacity,"yellow")),
 		print "| %5s " % colored(config.dev,"green"),
 		print "| %8d (%3d)" % (colored(cached,"green"),colored(percent,"yellow")),
 		print "| %8d (%3d)" % (colored(dirtyb,"green"),colored(dirtyp,"yellow")),
