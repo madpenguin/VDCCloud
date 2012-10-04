@@ -250,11 +250,11 @@ def do_stats():
 		wp = int(100 * float(z.ssd_writes) / float(total_writes))
 
 		print "| %s (%s)"   % (colored("%-14s" 	% inst,"green"),colored("%6s" % capacity,"yellow")),
-		print "| %s " 	    %  colored("%-5s" 	% config.dev,"green"),
-		print "| %s (%s)"   % (colored("%8d" 	% cached,"green"),	colored("%3d" % percent,"yellow")),
-		print "| %s (%s)"   % (colored("%8d" 	% dirtyb,"green"),	colored("%3d" % dirtyp,"yellow")),
-		print "| %s (%s)"   % (colored("%8d" 	% total_reads,"green"),	colored("%3d" % rp,"yellow")),
-		print "| %s (%s)"   % (colored("%8d" 	% total_writes,"green"),colored("%3d" % wp,"yellow"))
+		print "| %s" 	    %  colored("%-5s" 	% config.dev,"green"),
+		print "| %s (%%%s)"   % (colored("%8d" 	% cached,"green"),	colored("%3d" % percent,"yellow")),
+		print "| %s (%%%s)"   % (colored("%8d" 	% dirtyb,"green"),	colored("%3d" % dirtyp,"yellow")),
+		print "| %s (%%%s)"   % (colored("%8d" 	% total_reads,"green"),	colored("%3d" % rp,"yellow")),
+		print "| %s (%%%s)"   % (colored("%8d" 	% total_writes,"green"),colored("%3d" % wp,"yellow"))
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
