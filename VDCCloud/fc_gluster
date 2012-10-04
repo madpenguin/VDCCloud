@@ -36,7 +36,7 @@ from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
 #	Handy shortcuts
 #
 from sys 	import argv,exit
-from textcolor 	import colored
+from termcolor 	import colored
 #
 #	Local Constants
 #
@@ -551,7 +551,7 @@ def do_migrate(pingpong=False):
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 		result = pipe.communicate()
 		if pipe.returncode:
-			print " * - FAILURE RUNNING DMSETUP for %s" % inst)
+			print " * - FAILURE RUNNING DMSETUP for %s" % inst
 			exit(0)
 	
 		result = result[0]
