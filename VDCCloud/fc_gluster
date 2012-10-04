@@ -183,12 +183,12 @@ def do_stats():
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	#print "| %-14s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (colored("Instance","blue"),green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
 	
-	print "|",colored("%-12s" % "Instance"	,"blue"),colored("%-6s","","green"),
-	print "|",colored("%-5s"  % "Raw"	,"blue"),
-	print "|",colored("%-15s" % "Cached"	,"blue"),
-	print "|",colored("%-15s" % "Dirty"	,"blue"),
-	print "|",colored("%-15s" % "Read"	,"blue"),
-	print "|",colored("%-15s" % "write"	,"blue")+" |"
+	print "| %-12s (%6s)" % (colored("Instance","blue"),colored("","green")).
+	print "| %-5s"  % colored("Raw"		,"blue"),
+	print "| %-15s" % colored("Cached"	,"blue"),
+	print "| %-15s" % colored("Dirty"	,"blue"),
+	print "| %-15s" % colored("Read"	,"blue"),
+	print "| %-15s" % colored("write"	,"blue")+" |"
 	
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	for inst in getInstances(): 
@@ -199,8 +199,7 @@ def do_stats():
 		else:	config.ssd,config.dev = ['None','None']
 
 		if not isRunning(inst):
-			print "|",colored("%-12s" % inst,"blue"),colored("%-6s","down","red"),"|"
-			#print "| %s%-23s%s | %s%-5s%s |    %s***%s down %s***%s | %51s |" % (red,inst,x,yellow,config.dev,x,red,blue,red,x,' ')
+			print "| %-12s (%-6s) |" % (colored(inst,"blue"),colored("down","red"))
 			continue
 
 		stats = ""
@@ -253,12 +252,12 @@ def do_stats():
 		total_writes = z.ssd_writes + z.disk_writes + 1
 		wp = 100 * float(z.ssd_writes) / float(total_writes)
 
-		cach = "%s%8d%s (%s%3d%%%s) | " % (colored(cached,"green"),colored(percent,"yellow"))
-		dirt = "%s%8d%s (%s%3d%%%s) | " % (colored(dirtyb,"green"),colored(dirtyp,"yellow"))
-		read = "%s%8d%s (%s%3d%%%s) | " % (colored(total_reads,"green"),colored(rp,"yellow"))
-		writ = "%s%8d%s (%s%3d%%%s) | " % (colored(total_writes,"green"),colored(wp,"yellow"))
-
-		print "| %s%-14s%s (%s%6s%s) | %s%-5s%s | " % (colored(inst,"green"),colored(capacity,"yellow"),colored(config.dev,"green"))+cach+dirt+read+writ
+		print "| %-14s (%6s)" % (colored(inst,"green"),colored(capacity,"yellow"),
+		print "| %5s " % colored(config.dev,"green"),
+		print "| %8d (%3d)" % (colored(cached,"green"),colored(percent,"yellow")),
+		print "| %8d (%3d)" % (colored(dirtyb,"green"),colored(dirtyp,"yellow")),
+		print "| %8d (%3d)" % (colored(total_reads,"green"),colored(rp,"yellow")),
+		print "| %8d (%3d)" % (colored(total_writes,"green"),colored(wp,"yellow"))
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
