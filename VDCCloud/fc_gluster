@@ -181,7 +181,15 @@ class Settings():
 def do_stats():
 	""" print out our status in tabular format """
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
-	print "| %-14s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (colored("Instance",blue),green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
+	#print "| %-14s %s%6s%s   | %s%-5s%s | %s%15s%s | %s%15s%s | %s%15s%s | %s%15s%s |" % (colored("Instance","blue"),green,"Size",x,blue,"Raw",x,blue,"Cached",x,blue,"Dirty",x,blue,"Read",x,blue,'Write',x)
+	
+	print "|",colored("%-12s" % "Instance"	,"blue"),colored("%-6s","","green"),
+	print "|",colored("%-5s"  % "Raw"	,"blue"),
+	print "|",colored("%-15s" % "Cached"	,"blue"),
+	print "|",colored("%-15s" % "Dirty"	,"blue"),
+	print "|",colored("%-15s" % "Read"	,"blue"),
+	print "|",colored("%-15s" % "write"	,"blue")+" |"
+	
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	for inst in getInstances(): 
 		config = doLoad(inst)
@@ -191,7 +199,8 @@ def do_stats():
 		else:	config.ssd,config.dev = ['None','None']
 
 		if not isRunning(inst):
-			print "| %s%-23s%s | %s%-5s%s |    %s***%s down %s***%s | %51s |" % (red,inst,x,yellow,config.dev,x,red,blue,red,x,' ')
+			print "|",colored("%-12s" % inst,"blue"),colored("%-6s","down","red"),"|"
+			#print "| %s%-23s%s | %s%-5s%s |    %s***%s down %s***%s | %51s |" % (red,inst,x,yellow,config.dev,x,red,blue,red,x,' ')
 			continue
 
 		stats = ""
@@ -206,7 +215,7 @@ def do_stats():
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 		result = pipe.communicate()
 		if pipe.returncode:
-			print " %s*%s - FAILURE RUNNING DMSETUP for %s%s%s" % (red,x,yellow,inst,x)
+			print "* FAILURE RUNNING DMSETUP for %s" % inst)
 			sys.exit(0)
 
 		result = result[0]
@@ -244,12 +253,12 @@ def do_stats():
 		total_writes = z.ssd_writes + z.disk_writes + 1
 		wp = 100 * float(z.ssd_writes) / float(total_writes)
 
-		cach = "%s%8d%s (%s%3d%%%s) | " % (green,cached,x,yellow,percent,x)
-		dirt = "%s%8d%s (%s%3d%%%s) | " % (green,dirtyb,x,yellow,dirtyp,x)
-		read = "%s%8d%s (%s%3d%%%s) | " % (green,total_reads,x,yellow,rp,x)
-		writ = "%s%8d%s (%s%3d%%%s) | " % (green,total_writes,x,yellow,wp,x)
+		cach = "%s%8d%s (%s%3d%%%s) | " % (colored(cached,"green"),colored(percent,"yellow"))
+		dirt = "%s%8d%s (%s%3d%%%s) | " % (colored(dirtyb,"green"),colored(dirtyp,"yellow"))
+		read = "%s%8d%s (%s%3d%%%s) | " % (colored(total_reads,"green"),colored(rp,"yellow"))
+		writ = "%s%8d%s (%s%3d%%%s) | " % (colored(total_writes,"green"),colored(wp,"yellow"))
 
-		print "| %s%-14s%s (%s%6s%s) | %s%-5s%s | " % (green,inst,x,yellow,capacity,x,green,config.dev,x)+cach+dirt+read+writ
+		print "| %s%-14s%s (%s%6s%s) | %s%-5s%s | " % (colored(inst,"green"),colored(capacity,"yellow"),colored(config.dev,"green")+cach+dirt+read+writ
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
