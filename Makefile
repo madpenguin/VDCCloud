@@ -1,4 +1,5 @@
 install:
+	git pull
 	python setup.py install --record install.txt
 
 uninstall:
