@@ -24,6 +24,9 @@ import stat
 import time
 import shelve
 import libvirt
+import datetime
+import pymongo
+from datetime import datetime
 #
 #	Useful constants from libvirt
 #
@@ -32,6 +35,10 @@ from libvirt import VIR_MIGRATE_PEER2PEER	# migrate directly, !via libirt
 from libvirt import VIR_MIGRATE_PERSIST_DEST	# make the result persistent
 from libvirt import VIR_MIGRATE_UNDEFINE_SOURCE	# remove froms src on completion
 from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
+#
+#	Our Code Libraries
+#
+from fc_cloud import Database
 #
 #	Handy shortcuts
 #
@@ -44,12 +51,143 @@ CONFIG_DIR 	= '/etc/fc_gluster/'
 DATABASE 	= '/etc/flashcache.dbm'
 HOSTNAME 	= os.uname()[1]
 FALLOW_DELAY 	= 300
+MAX_BLOCK	= 64				# max NBD devices we're going to allow
 #
 sys.path.append(CONFIG_DIR)	# TODO:: remove!
 #
 #	Open Persistent Database
 #
-db = shelve.open(DATABASE,flag='c',protocol=None,writeback=True)
+#db = shelve.open(DATABASE,flag='c',protocol=None,writeback=True)
+#
+class Database:
+	""" Class to manage the MongoDB Connection """
+	def __init__(self):
+		#
+		#	TODO :: Add Error trapping / retries!
+		#
+		mongo = pymongo.ReplicaSetConnection(
+			"data1:27017,data2:27017",
+			replicaSet="linux",
+			safe=True)
+
+		self.db = mongo.fc_gluster
+		#now = datetime.utcnow()
+		#record = {
+		#	"name"		: 'test1', 
+		#	"node"		: 'node1',
+		#	"vol_group"	: 'cache',
+		#	"path"		: 'encryptec',
+		#	"disabled"	: False,
+		#	"created"	: now,
+		#	"modified"	: now,
+		#	"cache_size"	: 1,
+		#	"vol_size"	: 10,
+		#}
+		#self.db.instances.save(record)
+		
+		#record = {
+		#	"node"		: "node1",
+		#	"name"		: "varnish1",
+		#	"device"	: "nbd4"
+		#}
+		#self.db.devices.save(record)
+
+	def getDevice(self,host,name):
+		""" retrieve the device name for an instance on a host """
+		record = {
+			"node"	: host,
+			"name"	: name
+		}
+		record = self.db.devices.find_one(record)
+		if record: return record['device']
+		return None
+
+	def delDevice(self,host,name):
+		""" retrieve the device name for an instance on a host """
+		record = {
+			"node"	: host,
+			"name"	: name
+		}
+		return self.db.devices.remove(record)
+	
+	def updateDevice(self,host,name,dev):
+		""" update a device entry """
+		search = {
+			"node"	: host,
+			"name"	: name,
+		}
+		update = {
+			"node"	: host,
+			"name"	: name,
+			"device": dev	
+		}
+		return self.db.devices.find_and_modify(search, update , new=True, upsert=True);		
+		
+		#record = {
+		#	"node"		: "node1",
+		#	"name"		: "varnish1",
+		#	"device"	: "nbd4"
+		#}
+		#self.db.devices.save(record)
+		
+		
+		
+		record = {
+			"node"	: host,
+			"name"	: name
+		}
+		return self.db.devices.find_one(record)
+
+	def getNextDevice(self):
+		""" find the next free NBD device """
+		files = []
+		record = {
+			"node"	: HOSTNAME
+		}
+		results = self.db.devices.find(record)
+		for result in results:
+			path = "/dev/%s" % result['device']
+			files.append(path)
+		
+		pids=os.listdir('/proc') 
+		for pid in sorted(pids): 
+			try: 
+				int(pid) 
+			except ValueError: 
+				continue 
+			fd_dir=os.path.join('/proc', pid, 'fd') 
+			for file in os.listdir(fd_dir): 
+				try: 
+					link=os.readlink(os.path.join(fd_dir, file)) 
+				except OSError: 
+					continue 
+				files.append(link)
+		
+		index = 0
+		while index < MAX_BLOCK:
+			path = "/dev/nbd%d" % index
+			if not path in files: return "nbd%d" % index
+			index += 1
+			
+		print "No BLOCK devices left"
+		exit()
+
+	def getInstance(self,host,name):
+		""" retrieve the device name for an instance on a host """
+		record = {
+			"node"	: host,
+			"name"	: name
+		}
+		return self.db.instances.find_one(record)
+		
+	def getInstances(self,host):
+		""" retrieve list of instances for given node """
+		record = {
+			"node"	: host
+		}
+		return self.db.instances.find(record)
+
+mdb = Database()
 #
 ###############################################################################
 #
@@ -83,16 +221,12 @@ def delay(secs):
 #
 def getInstances():
 	""" return the names of the instances to process """
-
 	if len(argv)>2:	return argv[2:]
 	else:
 		instances = []
-		for path in [CONFIG_DIR]:
-			files = os.listdir(path)
-			for inst in files:
-				[inst,ext]= inst.split(".")
-				if ext=="py": instances.append(inst)
-
+		results = mdb.getInstances(HOSTNAME)
+		for result in results:
+			instances.append(result['name'])
 		return instances
 #
 ###############################################################################
@@ -108,10 +242,11 @@ def doLoad(inst):
 #
 ###############################################################################
 #
-def logBegin(text):
+def logBegin(text,name=''):
 	""" start logging a line to stdout """
 	print colored("*","blue"),
-	print colored("text","green"),
+	print colored(text,"green"),
+	if name <> '': print colored(name,"yellow"),
 	sys.stdout.flush()
 #
 ###############################################################################
@@ -138,6 +273,12 @@ def logYN(text):
 		if not choice in ['y','N','']: continue
 		if choice == 'y': return True
 		return False
+
+def logError(text,name):
+	""" standard format for error display """
+	print " "+colored("*","blue"),
+	print colored(text,"green"),
+	print "["+colored(name,"red")+"]"
 #
 ###############################################################################
 #
@@ -146,11 +287,11 @@ def isRunning(inst):
 #
 ###############################################################################
 #	
-def setParam(inst,config,param,v):
+def setParam(inst,dev,param,v):
 	""" set a flashcache parameter """
-	path = "/proc/sys/dev/flashcache/"+inst+"+"+config.dev+"/"+param
+	path = "/proc/sys/dev/flashcache/"+inst['name']+"+"+dev+"/"+param
 	if os.path.exists(path):
-		print "["+colored(param,"yellow")+"="+colored(v,"green")+"]"
+		print "["+colored(param,"yellow")+"="+colored(v,"green")+"]",
 		io = open(path,"w")
 		io.write(str(v)+"\n")
 		io.close()
@@ -170,49 +311,42 @@ def remote(cmd):
 	return [pipe.returncode,result]
 #
 ###############################################################################
-#	
-class Settings():
-	""" dummy class for stats - TODO:: get rid of this! """
-	def __init__(self):
-		pass
 #
-###############################################################################
+#	do_stats - print out our current status in tabular format
 #
 def do_stats():
 	""" print out our status in tabular format """
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	print "| %s %s" % (colored("%-14s" % "Instance"	,"blue"),colored("%8s" % "Size ","green")),
 	print "| %s" 	%  colored("%-5s"  % "Raw"	,"blue"),
-	print "| %s" 	%  colored("%15s" % "Cached"	,"blue"),
-	print "| %s" 	%  colored("%15s" % "Dirty"	,"blue"),
-	print "| %s"	%  colored("%15s" % "Read"	,"blue"),
-	print "| %s"	%  colored("%15s" % "write"	,"blue")+" |"
+	print "| %s" 	%  colored("%15s"  % "Cached"	,"blue"),
+	print "| %s" 	%  colored("%15s"  % "Dirty"	,"blue"),
+	print "| %s"	%  colored("%15s"  % "Read"	,"blue"),
+	print "| %s"	%  colored("%15s"  % "write"	,"blue")+" |"
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
-	for inst in getInstances(): 
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		if db.has_key(inst):
-			config.ssd,config.dev = db[inst]
-		else:	config.ssd,config.dev = ['None','None']
+	for inst in mdb.getInstances(HOSTNAME):
+		name = inst['name']
+		ssd = "/dev/%s/%s" % (inst['vol_group'],name)
+		dev = mdb.getDevice(HOSTNAME,name)
 
-		if not isRunning(inst):
-			print "| %s (%s) |" % (colored("%-14s" % inst,"blue"),colored("%6s" % "down","red")),
-			print "+"+17*" "+"+"+17*" "+"+"+17*" "+"+"+17*' '+'+'
+		if not isRunning(name):
+			print "| %s (%s) |" % (colored("%-14s" % name,"blue"),colored("%6s" % "down","red")),
+			print 6*" "+"|"+17*" "+"|"+17*" "+"|"+17*' '+'|'+17*' '+'|'
 			continue
 
 		stats = ""
-		if config.dev:
-			path = "/proc/flashcache/"+inst+"+"+config.dev+"/flashcache_stats"
+		if dev:
+			path = "/proc/flashcache/"+name+"+"+dev+"/flashcache_stats"
 			if os.path.exists(path): 
 				io = open(path,"r")
 				stats = io.read()
 				io.close()
 
-		cmd = "dmsetup table %s" % inst
+		cmd = "dmsetup table %s" % name
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 		result = pipe.communicate()
 		if pipe.returncode:
-			print "* FAILURE RUNNING DMSETUP for %s" % inst
+			print "* FAILURE RUNNING DMSETUP for %s" % name
 			sys.exit(0)
 
 		result = result[0]
@@ -237,21 +371,23 @@ def do_stats():
 			dirtyb = int(record[0].split("(")[1].replace(")",""))
 			dirtyp = int(record[1].split("(")[1].replace(")",""))
 
-		z = Settings()
 		stats = stats.replace("\n"," ")
 		stats = stats.split(" ")
 		for stat in stats:
 			if len(stat)<2: continue
 			key,val = stat.split("=")
-			setattr(z,key,int(val))
+			if key == 'ssd_reads'	: ssd_reads = int(val)
+			if key == 'disk_reads'	: disk_reads = int(val)
+			if key == 'ssd_writes'	: ssd_writes = int(val)
+			if key == 'disk_writes'	: disk_writes = int(val)			
 
-		total_reads = z.ssd_reads + z.disk_reads + 1
-		rp = int(100 * float(z.ssd_reads) / float(total_reads))
-		total_writes = z.ssd_writes + z.disk_writes + 1
-		wp = int(100 * float(z.ssd_writes) / float(total_writes))
+		total_reads = ssd_reads + disk_reads + 1
+		rp = int(100 * float(ssd_reads) / float(total_reads))
+		total_writes = ssd_writes + disk_writes + 1
+		wp = int(100 * float(ssd_writes) / float(total_writes))
 
-		print "| %s (%s)"   % (colored("%-14s" 	% inst,"green"),colored("%6s" % capacity,"yellow")),
-		print "| %s" 	    %  colored("%-5s" 	% config.dev,"green"),
+		print "| %s (%s)"   % (colored("%-14s" 	% name,"green"),colored("%6s" % capacity,"yellow")),
+		print "| %s" 	    %  colored("%-5s" 	% dev,"green"),
 		print "| %s (%s)"   % (colored("%8d" 	% cached,"green"),	colored("%3d%%" % percent,"yellow")),
 		print "| %s (%s)"   % (colored("%8d" 	% dirtyb,"green"),	colored("%3d%%" % dirtyp,"yellow")),
 		print "| %s (%s)"   % (colored("%8d" 	% total_reads,"green"),	colored("%3d%%" % rp,"yellow")),
@@ -261,208 +397,106 @@ def do_stats():
 #
 ###############################################################################
 #
-def do_stop():
-	""" stop one or more instances """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Stopping %s :: ' % inst)
-
-		if not isRunning(inst):
-			logEnd('already stopped',False)
-			continue
-
-		if not db.has_key(inst):
-			logEnd('unknown instance',False)
-			continue
-	
-		config.ssd,config.dev = db[inst]
-
-		if run("/sbin/dmsetup remove %s" % inst):
-			logEnd('dmsetup Failed',False)
-		else: 	
-			logMiddle('dm stopped',"green")
-			if run("qemu-nbd -d /dev/"+config.dev):
-				logMiddle(config.dev,red)
-			else:	
-				logMiddle(config.dev,blue)
-
-		logEnd('Ok',True)
-
-###############################################################################
+#	do_stop - stop a given instance
 #
-def do_remove():
+def do_stop(remove=False):
 	""" stop one or more instances """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Removing %s% :: ' % inst)
-
-		if not isRunning(inst):
-			logEnd('already stopped',False)
+	for name in getInstances():	
+		inst = mdb.getInstance(HOSTNAME,name)
+		if not inst:
+			logError('Instance does not exist on this node',name)
 			continue
 
-		if not db.has_key(inst):
-			logEnd('unknown instance',False)
+		if not isRunning(name):
+			logError('Instance is already stopped',name)
 			continue
-	
-		config.ssd,config.dev = db[inst]
-
-		if run("/sbin/dmsetup remove %s" % inst):
+		
+		dev = mdb.getDevice(HOSTNAME,name)
+		if not dev:
+			logError('No device known for',name)
+			continue
+			
+		logBegin('Stopping',name)			
+		ssd = "/dev/%s/%s" % (inst['vol_group'],name)		
+		
+		if run("/sbin/dmsetup remove %s" % name):
 			logEnd('dmsetup Failed',False)
-			continue
 		else: 	
 			logMiddle('dm stopped',"green")
-			if run("qemu-nbd -d /dev/"+config.dev):
-				logMiddle(config.dev,red)
-			else:	
-				logMiddle(config.dev,"blue")
-
-		setParam(inst,config,"do_sync",1)
-
-		if run("lvremove -f "+config.ssd):
+			if run("qemu-nbd -d /dev/"+dev):
+				logMiddle(dev,"red")
 				logEnd('Fail',False)
-		else:	logEnd('Ok',True)
-
+			else:	
+				logMiddle(dev,"blue")
+				setParam(inst,dev,"do_sync",1)
+				if not remove:
+					logEnd('Ok',True)
+				else:
+					logMiddle('remove','blue')
+					if run("lvremove -f "+ssd):
+						logEnd('Fail',False)
+					else:
+						mdb.delDevice(HOSTNAME,name)
+						logEnd('Ok',True)
+#
 ###############################################################################
 #
 def do_start():
 	""" start one or more instances """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Starting %s :: ' % inst)
-
-		blockdev = "/dev/mapper/"+inst
-		if os.path.exists(blockdev):
-			logEnd('already started',False)
+	for name in getInstances():	
+		inst = mdb.getInstance(HOSTNAME,name)
+		if not inst:
+			logError('Instance does not exist on this node',name)
 			continue
 
-		img = "/"+config.FS+"/"+inst+".img"
+		if isRunning(name):
+			logError('Instance is already running',name)
+			continue 
+				
+		img = "/"+inst['path']+"/"+name+".img"
 		if not os.path.exists(img):
 			logEnd('missing: '+img,False)
 			continue
 
-		if db.has_key(inst):
-			config.ssd,config.dev = db[inst]
-			logMiddle('old cache',"blue")
+		ssd = "/dev/%s/%s" % (inst['vol_group'],name)
+		
+		logBegin('Starting',name)			
+		
+		dev = mdb.getDevice(HOSTNAME,name)
+		if dev:
+			logMiddle('old::'+dev,"blue")
 		else:
-			logMiddle('new cache',"green")
-			used = []
-			config.ssd = "/dev/"+config.VG+"/"+inst
-			for entry in db:
-				ssd,dev = db[entry]
-				index = int(dev[3:])
-				used.append(index)
-
-			index = 0
-			while index in used: index += 1
-			config.dev = 'nbd'+str(index)
-			db[inst] = [config.ssd,config.dev]
-
-		if run("qemu-nbd -c /dev/"+config.dev+" "+img):	
-			logEnd(config.dev,Fail)
+			dev = mdb.getNextDevice()
+			logMiddle('new::'+dev,"green")
+			mdb.updateDevice(HOSTNAME,name,dev)
+			
+		if run("qemu-nbd -c /dev/"+dev+" "+img):	
+			logEnd(dev,Fail)
 			continue
 
-		logMiddle(config.dev,"blue")
+		logMiddle("connect","blue")
 
-		if os.path.exists(config.ssd):
+		if os.path.exists(ssd):
 			logMiddle('load',"blue")
-			if run("/sbin/flashcache_load "+config.ssd+" "+inst):
+			if run("/sbin/flashcache_load "+ssd+" "+name):
 				logEnd('fail',False)
 				continue
 		else:
 			logMiddle('lvm',"blue")
-			if run("lvcreate -L%dG -n%s %s" % (config.SIZE,inst,config.VG)):
+			if run("lvcreate -L%dG -n%s %s" % (inst['cache_size'],name,inst['vol_group'])):
 				logEnd('fail',False)
 				continue
 			
 			logMiddle('ndb',"blue")
-			if run("/sbin/flashcache_create -p back -s%dg %s %s /dev/%s" % (config.SIZE,inst,config.ssd,config.dev)):
+			if run("/sbin/flashcache_create -p back -s%dg %s %s /dev/%s" % (inst['cache_size'],name,ssd,dev)):
 				logEnd('fail',False)
 				continue
 
-		logMiddle('ReadAhead::8192',"blue")
-		if run("blockdev --setra 8192 /dev/mapper/"+inst): logMiddle('fail',"red")
-		setParam(inst,config,"reclaim_policy",1)
-		setParam(inst,config,"fallow_delay",FALLOW_DELAY)
+		logMiddle('RA::8192',"blue")
+		if run("blockdev --setra 8192 /dev/mapper/"+name): logMiddle('fail',"red")
+		setParam(inst,dev,"reclaim_policy",1)
+		setParam(inst,dev,"fallow_delay",FALLOW_DELAY)
 		logEnd('Ok',"green")
-#
-###############################################################################
-#
-def do_sync():
-	""" synchronise all instances with their back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Synchronizing %s' % inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,"fallow_delay",FALLOW_DELAY)
-			setParam(inst,config,"do_sync",1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_nosync():
-	""" synchronise all instances with their back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Setting local cache mode on %s' % inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,"do_sync",1)
-			setParam(inst,config,"fallow_delay",0)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_cache(v):
-	""" turn caching on or for for one or more back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Change caching %s' % inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,'cache_all',v)
-			setParam(inst,config,"do_sync",1)
-			setParam(inst,config,"reclaim_policy",1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_cacheoff(): 
-	""" turn caching off """
-	do_cache(0)
-#
-###############################################################################
-#
-def do_cacheon():  
-	""" turn caching on """
-	do_cache(1)
-#
-###############################################################################
-#
-def do_clearstats():
-	""" clear statistics """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Clearing stats %s' % inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,'zero_stats',1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
 #
 ###############################################################################
 #
@@ -645,33 +679,76 @@ def do_pingpong():
 #
 ###############################################################################
 #
-def do_usage():
-	print "Version: 0.0.1"
-	print "Usage:",
-	print "%s {start|stop|stats|clearstats|remove|sync|cacheon|cacheoff|migrate|pingpong}" % (argv[0])
-	exit(1)
+#	setParameters - cycle through the chosen instances and set given parameters
+#
+def setParameters(intro,param):
+	""" set specific parameters based on command line list """
+	for name in getInstances():	
+		if not isRunning(name):
+			logError('Instance is not running',name)
+			continue
+		inst = mdb.getInstance(HOSTNAME,name)
+		if not inst:
+			logError('Instance does not exist on this node',name)
+			continue
+				
+		dev = mdb.getDevice(HOSTNAME,name)
+		if not dev:
+			logError('No NBD device registered for',name)
+			continue
+			
+		logBegin(intro,name)
+		logMiddle(dev,'blue')
+		for key in param.keys():
+			val = param[key]
+			setParam(inst,dev,key,val)
+		logEnd('Ok',True)		
 #
 ###############################################################################
 #
+#	Generic routines to change system bahaviour
+#
+def do_sync():		setParameters('Synchronizing',{"fallow_delay":FALLOW_DELAY,'do_sync':1})
+def do_nosync():	setParameters('Synchronizing',{"fallow_delay":0})
+def do_cacheon():	setParameters('Enabling Cache',{"cache_all":1,"do_sync":1,"reclaim_policy":1})
+def do_cacheoff():	setParameters('Enabling Cache',{"cache_all":0,"do_sync":1,"reclaim_policy":1})
+def do_clearstats():	setParameters('Enabling Cache',{"zero_stats":1})
+def do_remove():	do_stop(remove=True)
+#
+###############################################################################
+#
+#	All possible entry points for the routine
+#
 routines = {
-	'stats'		:do_stats,
-	'clearstats'	:do_clearstats,
-	'stop' 		:do_stop,
-	'start'		:do_start,
-	'remove'	:do_remove,
 	'sync'		:do_sync,
 	'nosync'	:do_nosync,
-	'cacheoff'	:do_cacheoff,
 	'cacheon'	:do_cacheon,
+	'cacheoff'	:do_cacheoff,
+	'clearstats'	:do_clearstats,
+	'remove'	:do_remove,
+	#
+	'stats'		:do_stats,
+	'stop' 		:do_stop,
+	'start'		:do_start,
 	'migrate'	:do_migrate,
 	'pingpong'	:do_pingpong,
 }
-
-if len(argv)<2:	
-		cmd = ""
+#
+#	Display a list of possible command (dynamic)
+#
+def do_usage():
+	s = ''
+	for routine in routines.keys():
+		if s <> '': s+='|'
+		s += routine
+	print 'service fc_gluster [%s]' % s
+#
+#	This is the main command parser
+#
+if len(argv)<2:
+	cmd = ""
 else:	cmd = argv[1]
 
-if cmd in routines:	
-		routines[cmd]()
+if cmd in routines:
+	routines[cmd]()
 else:	do_usage()
-
