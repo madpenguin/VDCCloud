@@ -108,10 +108,11 @@ def doLoad(inst):
 #
 ###############################################################################
 #
-def logBegin(text):
+def logBegin(text,highlight=''):
 	""" start logging a line to stdout """
 	print colored("*","blue"),
 	print colored("text","green"),
+	if highlight != '': print colored(highlight,"yellow")
 	sys.stdout.flush()
 #
 ###############################################################################
@@ -133,7 +134,7 @@ def logMiddle(text,col):
 #
 def logYN(text):
 	while True:
-		logBegin(text+colored(" (y/N) ",yellow))
+		logBegin(text," (y/N) ")
 		choice = raw_input().lower()
 		if not choice in ['y','N','']: continue
 		if choice == 'y': return True
@@ -197,7 +198,7 @@ def do_stats():
 
 		if not isRunning(inst):
 			print "| %s (%s) |" % (colored("%-14s" % inst,"blue"),colored("%6s" % "down","red")),
-			print "+"+17*" "+"+"+17*" "+"+"+17*" "+"+"+17*' '+'+'
+			print 6*" "+"|"+17*" "+"|"+17*" "+"|"+17*' '+'|'+17*' '+'|'
 			continue
 
 		stats = ""
@@ -266,7 +267,7 @@ def do_stop():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Stopping %s :: ' % inst)
+		logBegin('Stopping',inst)
 
 		if not isRunning(inst):
 			logEnd('already stopped',False)
@@ -296,7 +297,7 @@ def do_remove():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Removing %s% :: ' % inst)
+		logBegin('Removing',inst)
 
 		if not isRunning(inst):
 			logEnd('already stopped',False)
@@ -331,7 +332,7 @@ def do_start():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Starting %s :: ' % inst)
+		logBegin('Starting',inst)
 
 		blockdev = "/dev/mapper/"+inst
 		if os.path.exists(blockdev):
@@ -395,7 +396,7 @@ def do_sync():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Synchronizing %s' % inst)
+		logBegin('Synchronizing',inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,"fallow_delay",FALLOW_DELAY)
@@ -411,7 +412,7 @@ def do_nosync():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Setting local cache mode on %s' % inst)
+		logBegin('Setting local cache mode on',inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,"do_sync",1)
@@ -427,7 +428,7 @@ def do_cache(v):
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Change caching %s' % inst)
+		logBegin('Change caching',inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,'cache_all',v)
@@ -456,7 +457,7 @@ def do_clearstats():
 	for inst in getInstances():
 		config = doLoad(inst)
 		if config.NODE <> HOSTNAME: continue
-		logBegin('Clearing stats %s' % inst)
+		logBegin('Clearing stats',inst)
 		config.ssd,config.dev = db[inst]
 		if isRunning(inst):
 			setParam(inst,config,'zero_stats',1)
@@ -516,7 +517,7 @@ def do_migrate(pingpong=False):
 	setParam(inst,config,"do_sync",1)
 	logEnd('Ok',True)
 
-	logBegin('Checking mapper on %s' % dest)
+	logBegin('Checking mapper on',dest)
 	blockdev = "/dev/mapper/"+inst
 
 	status,result = remote('ssh root@'+dest+' "if [ -e '+blockdev+' ]; then echo -n 1; else echo -n 0; fi"')
@@ -533,7 +534,7 @@ def do_migrate(pingpong=False):
 			logEnd('Fail',False);
 			return
 
-		logBegin('Shutting down Mapper on %s' % dest)
+		logBegin('Shutting down Mapper on',dest)
 		status,result = remote('ssh root@'+dest+' "service fc_gluster remove '+inst+'"')
 		if status:
 			logEnd('Failed',False)
@@ -542,7 +543,7 @@ def do_migrate(pingpong=False):
 	
 		logEnd('Ok',True)
 
-	logBegin('Creating Mapper on %s' % dest)
+	logBegin('Creating Mapper on',dest)
 	status,result = remote('ssh root@'+dest+' "service fc_gluster start '+inst+'"')
 	if status:
 		logEnd('Failed',False)
@@ -594,7 +595,7 @@ def do_migrate(pingpong=False):
 	delay(10)
 	logEnd('Ok',True)
 
-	logBegin('Migrating %s to %s' % inst,dest)
+	logBegin('Migrating %s to %s' % (inst,dest))
 
 	flags = VIR_MIGRATE_LIVE|VIR_MIGRATE_PEER2PEER|VIR_MIGRATE_PERSIST_DEST|VIR_MIGRATE_UNDEFINE_SOURCE
 	uri = "qemu+ssh://%s/system" % (dest)
@@ -646,7 +647,6 @@ def do_pingpong():
 ###############################################################################
 #
 def do_usage():
-	print "Version: 0.0.1"
 	print "Usage:",
 	print "%s {start|stop|stats|clearstats|remove|sync|cacheon|cacheoff|migrate|pingpong}" % (argv[0])
 	exit(1)
