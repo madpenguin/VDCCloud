@@ -25,7 +25,6 @@ import time
 import shelve
 import libvirt
 import datetime
-import pymongo
 from datetime import datetime
 #
 #	Useful constants from libvirt
@@ -38,7 +37,7 @@ from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
 #
 #	Our Code Libraries
 #
-from fc_cloud import Database
+from fc_mongo import Database
 #
 #	Handy shortcuts
 #
