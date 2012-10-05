@@ -38,7 +38,7 @@ from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
 #
 #	Our Code Libraries
 #
-from fc_cloud import Database 
+from fc_cloud import Database
 #
 #	Handy shortcuts
 #
@@ -110,19 +110,11 @@ def doLoad(inst):
 #
 ###############################################################################
 #
-<<<<<<< HEAD
-def logBegin(text,highlight=''):
-	""" start logging a line to stdout """
-	print colored("*","blue"),
-	print colored("text","green"),
-	if highlight != '': print colored(highlight,"yellow")
-=======
 def logBegin(text,name=''):
 	""" start logging a line to stdout """
 	print colored("*","blue"),
 	print colored(text,"green"),
 	if name <> '': print colored(name,"yellow"),
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 	sys.stdout.flush()
 #
 ###############################################################################
@@ -144,7 +136,7 @@ def logMiddle(text,col):
 #
 def logYN(text):
 	while True:
-		logBegin(text," (y/N) ")
+		logBegin(text+colored(" (y/N) ",yellow))
 		choice = raw_input().lower()
 		if not choice in ['y','N','']: continue
 		if choice == 'y': return True
@@ -200,17 +192,6 @@ def do_stats():
 	print "| %s"	%  colored("%15s"  % "Read"	,"blue"),
 	print "| %s"	%  colored("%15s"  % "write"	,"blue")+" |"
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
-<<<<<<< HEAD
-	for inst in getInstances(): 
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		if db.has_key(inst):
-			config.ssd,config.dev = db[inst]
-		else:	config.ssd,config.dev = ['None','None']
-
-		if not isRunning(inst):
-			print "| %s (%s) |" % (colored("%-14s" % inst,"blue"),colored("%6s" % "down","red")),
-=======
 	for inst in mdb.getInstances(HOSTNAME):
 		name = inst['name']
 		ssd = "/dev/%s/%s" % (inst['vol_group'],name)
@@ -218,7 +199,6 @@ def do_stats():
 
 		if not isRunning(name):
 			print "| %s (%s) |" % (colored("%-14s" % name,"blue"),colored("%6s" % "down","red")),
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 			print 6*" "+"|"+17*" "+"|"+17*" "+"|"+17*' '+'|'+17*' '+'|'
 			continue
 
@@ -285,56 +265,14 @@ def do_stats():
 #
 ###############################################################################
 #
-<<<<<<< HEAD
-def do_stop():
-	""" stop one or more instances """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Stopping',inst)
-
-		if not isRunning(inst):
-			logEnd('already stopped',False)
-			continue
-
-		if not db.has_key(inst):
-			logEnd('unknown instance',False)
-			continue
-	
-		config.ssd,config.dev = db[inst]
-
-		if run("/sbin/dmsetup remove %s" % inst):
-			logEnd('dmsetup Failed',False)
-		else: 	
-			logMiddle('dm stopped',"green")
-			if run("qemu-nbd -d /dev/"+config.dev):
-				logMiddle(config.dev,red)
-			else:	
-				logMiddle(config.dev,blue)
-
-		logEnd('Ok',True)
-
-###############################################################################
-=======
 #	do_stop - stop a given instance
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 #
 def do_stop(remove=False):
 	""" stop one or more instances """
-<<<<<<< HEAD
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Removing',inst)
-
-		if not isRunning(inst):
-			logEnd('already stopped',False)
-=======
 	for name in getInstances():	
 		inst = mdb.getInstance(HOSTNAME,name)
 		if not inst:
 			logError('Instance does not exist on this node',name)
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 			continue
 
 		if not isRunning(name):
@@ -373,21 +311,10 @@ def do_stop(remove=False):
 #
 def do_start():
 	""" start one or more instances """
-<<<<<<< HEAD
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Starting',inst)
-
-		blockdev = "/dev/mapper/"+inst
-		if os.path.exists(blockdev):
-			logEnd('already started',False)
-=======
 	for name in getInstances():	
 		inst = mdb.getInstance(HOSTNAME,name)
 		if not inst:
 			logError('Instance does not exist on this node',name)
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 			continue
 
 		if isRunning(name):
@@ -441,85 +368,6 @@ def do_start():
 #
 ###############################################################################
 #
-<<<<<<< HEAD
-def do_sync():
-	""" synchronise all instances with their back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Synchronizing',inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,"fallow_delay",FALLOW_DELAY)
-			setParam(inst,config,"do_sync",1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_nosync():
-	""" synchronise all instances with their back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Setting local cache mode on',inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,"do_sync",1)
-			setParam(inst,config,"fallow_delay",0)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_cache(v):
-	""" turn caching on or for for one or more back-ends """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Change caching',inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,'cache_all',v)
-			setParam(inst,config,"do_sync",1)
-			setParam(inst,config,"reclaim_policy",1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-def do_cacheoff(): 
-	""" turn caching off """
-	do_cache(0)
-#
-###############################################################################
-#
-def do_cacheon():  
-	""" turn caching on """
-	do_cache(1)
-#
-###############################################################################
-#
-def do_clearstats():
-	""" clear statistics """
-	for inst in getInstances():
-		config = doLoad(inst)
-		if config.NODE <> HOSTNAME: continue
-		logBegin('Clearing stats',inst)
-		config.ssd,config.dev = db[inst]
-		if isRunning(inst):
-			setParam(inst,config,'zero_stats',1)
-			logEnd('Ok',True)
-		else:
-			logEnd('Fail',False)
-#
-###############################################################################
-#
-=======
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 def do_migrate(pingpong=False):
 	""" migrate a running instance from one machine to another """
 	#
@@ -570,7 +418,7 @@ def do_migrate(pingpong=False):
 	setParam(inst,config,"do_sync",1)
 	logEnd('Ok',True)
 
-	logBegin('Checking mapper on',dest)
+	logBegin('Checking mapper on %s' % dest)
 	blockdev = "/dev/mapper/"+inst
 
 	status,result = remote('ssh root@'+dest+' "if [ -e '+blockdev+' ]; then echo -n 1; else echo -n 0; fi"')
@@ -587,7 +435,7 @@ def do_migrate(pingpong=False):
 			logEnd('Fail',False);
 			return
 
-		logBegin('Shutting down Mapper on',dest)
+		logBegin('Shutting down Mapper on %s' % dest)
 		status,result = remote('ssh root@'+dest+' "service fc_gluster remove '+inst+'"')
 		if status:
 			logEnd('Failed',False)
@@ -596,7 +444,7 @@ def do_migrate(pingpong=False):
 	
 		logEnd('Ok',True)
 
-	logBegin('Creating Mapper on',dest)
+	logBegin('Creating Mapper on %s' % dest)
 	status,result = remote('ssh root@'+dest+' "service fc_gluster start '+inst+'"')
 	if status:
 		logEnd('Failed',False)
@@ -648,7 +496,7 @@ def do_migrate(pingpong=False):
 	delay(10)
 	logEnd('Ok',True)
 
-	logBegin('Migrating %s to %s' % (inst,dest))
+	logBegin('Migrating %s to %s' % inst,dest)
 
 	flags = VIR_MIGRATE_LIVE|VIR_MIGRATE_PEER2PEER|VIR_MIGRATE_PERSIST_DEST|VIR_MIGRATE_UNDEFINE_SOURCE
 	uri = "qemu+ssh://%s/system" % (dest)
@@ -699,12 +547,6 @@ def do_pingpong():
 #
 ###############################################################################
 #
-<<<<<<< HEAD
-def do_usage():
-	print "Usage:",
-	print "%s {start|stop|stats|clearstats|remove|sync|cacheon|cacheoff|migrate|pingpong}" % (argv[0])
-	exit(1)
-=======
 #	setParameters - cycle through the chosen instances and set given parameters
 #
 def setParameters(intro,param):
@@ -729,7 +571,6 @@ def setParameters(intro,param):
 			val = param[key]
 			setParam(inst,dev,key,val)
 		logEnd('Ok',True)		
->>>>>>> f4ed866b33f2ee17783cd1fb219fad306f1d11e3
 #
 ###############################################################################
 #
