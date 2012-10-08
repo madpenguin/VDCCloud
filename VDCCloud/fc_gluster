@@ -119,9 +119,9 @@ def run(cmd):
 	return pipe.returncode
 #
 def background(cmd):
-	pipe = sub.Popen(cmd,bufsize=16384,stderr=sub.PIPE,shell=True)
-	result = pipe.communicate()
-	return pipe.returncode
+	process = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
+	result = process.communicate()
+	return process
 #
 def remote(cmd):
 	""" run a shell command in a sub-shell """
@@ -232,7 +232,7 @@ def do_stats():
 def do_stop(remove=False):
 	""" stop one or more instances """
 	for name in getInstances():	
-		inst = mdb.getInstance(HOSTNAME,name)
+		inst = mdb.getInstance(name)
 		if not inst:
 			logError('Instance does not exist on this node',name)
 			continue
@@ -279,7 +279,7 @@ def do_stop(remove=False):
 def do_start():
 	""" start one or more instances """
 	for name in getInstances():	
-		inst = mdb.getInstance(HOSTNAME,name)
+		inst = mdb.getInstance(name)
 		if not inst:
 			logError('Instance does not exist on this node',name)
 			continue
@@ -530,7 +530,7 @@ def setParameters(intro,param):
 		if not isRunning(name):
 			logError('Instance is not running',name)
 			continue
-		inst = mdb.getInstance(HOSTNAME,name)
+		inst = mdb.getInstance(name)
 		if not inst:
 			logError('Instance does not exist on this node',name)
 			continue
@@ -565,7 +565,7 @@ def do_settype():
 	except:
 		do_usage()
 		
-	inst = mdb.getInstance(HOSTNAME,name)
+	inst = mdb.getInstance(name)
 	if not inst:
 		logError('Instance does not exist on this node',name)
 		return
@@ -586,7 +586,7 @@ def do_sethosts():
 	except:
 		do_usage()
 	
-	inst = mdb.getInstance(HOSTNAME,name)
+	inst = mdb.getInstance(name)
 	if not inst:
 		logError('Instance does not exist on this node',name)
 		return
@@ -604,7 +604,7 @@ def do_setdevice():
 	except:
 		do_usage()
 	
-	inst = mdb.getInstance(HOSTNAME,name)
+	inst = mdb.getInstance(name)
 	if not inst:
 		logError('Instance does not exist on this node',name)
 		return
@@ -716,6 +716,36 @@ def do_down(inst):
 #
 ###############################################################################
 #
+#	do_backup - bring a back-end up
+#
+def do_backup():
+	host = mdb.getHost(HOSTNAME)
+	if not host:
+		logError("This host is not registered as a storage node",HOSTNAME)
+		return
+	
+	ip = host['ip']
+	logBegin("Starting backends for",HOSTNAME)
+	for name in getInstances():
+		inst = mdb.getInstance(name)
+		if not inst:
+			logError('Instance does not exist on this node',name)
+			continue
+		if not inst.has_key('type') or inst['type'] != "RAID": continue		
+		for host in inst['hosts']:
+			if host == HOSTNAME:
+				cmd = "qemu-nbd -p %s -b %s -t -e 2 /srv/%s/%s.img" % (inst["port"],ip,inst["vol"],name)
+				process = background(cmd):
+					logMiddle("Failed::"+name,"red")
+					continue
+				logMiddle(name,"yellow")
+				print "Processid = ",process.pid
+	logEnd("Done",True)
+				
+
+#
+###############################################################################
+#
 #	do_addraid - add a new RAID instance
 #
 def do_addraid():
@@ -726,7 +756,7 @@ def do_addraid():
 	vol		= argv[6]
 	vol_size	= argv[7]
 	hosts		= argv[8:]
-	if mdb.getInstance(HOSTNAME,name):
+	if mdb.getInstance(name):
 		logError("Instance already exists",name)
 		return
 	mdb.addRaid(name,port,cache,cache_size,vol,vol_size,hosts)
@@ -753,6 +783,7 @@ routines = {
 	'sethosts'	:do_sethosts,
 	'setdevice'	:do_setdevice,
 	'addraid'	:do_addraid,
+	'backup'	:do_backup,
 }
 #
 #	Display a list of possible command (dynamic)
