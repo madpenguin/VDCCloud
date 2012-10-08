@@ -119,10 +119,7 @@ def run(cmd):
 	return pipe.returncode
 #
 def background(cmd):
-	process = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
-	result = process.communicate()
-	if result: return False
-	return process.pid
+	return sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=False)
 #
 def remote(cmd):
 	""" run a shell command in a sub-shell """
@@ -728,6 +725,7 @@ def do_backup():
 		return
 	
 	ip = host['ip']
+	started = []
 	logBegin("Starting backends for",HOST)
 	for name in getInstances(False):
 		inst = mdb.getInstance(name)
@@ -736,17 +734,25 @@ def do_backup():
 			continue
 		if not inst.has_key('type') or inst['type'] != "RAID": continue		
 		for host in inst['hosts']:
-			if host == HOSTNAME:
-				cmd = "qemu-nbd -p %s -b %s -t -e 2 /srv/%s/%s.img" % (inst["port"],ip,inst["vol"],name)
-				pid = background(cmd)
-				if not pid:
+			if host == HOST:
+				cmd = ["/usr/bin/qemu-nbd","-p",inst['port'],"-b",ip,"-t","-e","2","/srv/%s/%s.img" % (inst["vol"],name)]
+				process = background(cmd)
+				if not process.pid:
 					logMiddle("Failed::"+name,"red")
 					continue
 				logMiddle(name,"yellow")
-				print "Processid = ",pid
+				started.append([name,process.pid])
 	logEnd("Done",True)
-				
-
+	logError("Sleeping","2")
+	time.sleep(2)
+	logBegin("Checking status")
+	for entry in started:
+		name,pid = entry
+		if os.path.exists("/proc/%d" % pid):
+			logMiddle("%s Ok [%d]" % (name,pid),"yellow")
+		else:	logMiddle("%s Failed [%d]" % (name,pid),"red")
+	
+	logEnd("Ok",True)	
 #
 ###############################################################################
 #
