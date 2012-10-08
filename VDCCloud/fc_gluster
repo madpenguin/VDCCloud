@@ -121,7 +121,8 @@ def run(cmd):
 def background(cmd):
 	process = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
 	result = process.communicate()
-	return process
+	if result: return False
+	return process.pid
 #
 def remote(cmd):
 	""" run a shell command in a sub-shell """
@@ -735,11 +736,12 @@ def do_backup():
 		for host in inst['hosts']:
 			if host == HOSTNAME:
 				cmd = "qemu-nbd -p %s -b %s -t -e 2 /srv/%s/%s.img" % (inst["port"],ip,inst["vol"],name)
-				process = background(cmd):
+				pid = background(cmd)
+				if not pid:
 					logMiddle("Failed::"+name,"red")
 					continue
 				logMiddle(name,"yellow")
-				print "Processid = ",process.pid
+				print "Processid = ",pid
 	logEnd("Done",True)
 				
 
