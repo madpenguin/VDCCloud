@@ -729,7 +729,7 @@ def do_backup():
 	
 	ip = host['ip']
 	logBegin("Starting backends for",HOST)
-	for name in getInstances(HOST):
+	for name in getInstances(False):
 		inst = mdb.getInstance(name)
 		if not inst:
 			logError('Instance does not exist',name)

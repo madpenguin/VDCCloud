@@ -169,10 +169,9 @@ class Database:
 		
 	def getInstances(self,host):
 		""" retrieve list of instances for given node """
-		record = {
-			"node"	: host
-		}
-		return self.db.instances.find(record)
+		if not host:
+			return self.db.instances.find()
+		else:	return self.db.instances.find({"node":host})
 
 	def getHost(self,host):
 		return self.db.hosts.find_one({'host':host})
