@@ -2,7 +2,7 @@
 #
 #	fc_gluster - service control routines
 #
-#	Mad Pengiun <madpenguin@linux.co.uk> (c) 2012
+#	Mad Pengiun <madpenguin@linux.co.uk> (c) 2012 
 #
 #	TODO:: modprobe for flashcache and nbd @ start
 #	TODO:: fix auto-boot on node1 and node2 re; mount gluster
@@ -119,7 +119,7 @@ def run(cmd):
 	return pipe.returncode
 #
 def background(cmd):
-	return sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=False)
+	return sub.Popen(cmd,shell=False)
 #
 def remote(cmd):
 	""" run a shell command in a sub-shell """
@@ -735,7 +735,7 @@ def do_backup():
 		if not inst.has_key('type') or inst['type'] != "RAID": continue		
 		for host in inst['hosts']:
 			if host == HOST:
-				cmd = ["/usr/bin/qemu-nbd","-p",inst['port'],"-b",ip,"-t","-e","2","/srv/%s/%s.img" % (inst["vol"],name)]
+				cmd = ["/usr/bin/qemu-nbd","-p",inst['port'],"-b",ip,"-t","-e","2","/srv/%s/%s.img" % (inst["vol"],name),"&"]
 				process = background(cmd)
 				if not process.pid:
 					logMiddle("Failed::"+name,"red")
@@ -743,8 +743,8 @@ def do_backup():
 				logMiddle(name,"yellow")
 				started.append([name,process.pid])
 	logEnd("Done",True)
-	logError("Sleeping","2")
-	time.sleep(2)
+	logError("Sleeping","6")
+	time.sleep(6)
 	logBegin("Checking status")
 	for entry in started:
 		name,pid = entry
