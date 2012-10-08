@@ -720,17 +720,19 @@ def do_down(inst):
 #	do_backup - bring a back-end up
 #
 def do_backup():
-	host = mdb.getHost(HOSTNAME)
+
+	HOST = HOSTNAME.split(".")[0]	
+	host = mdb.getHost(HOST)
 	if not host:
 		logError("This host is not registered as a storage node",HOSTNAME)
 		return
 	
 	ip = host['ip']
-	logBegin("Starting backends for",HOSTNAME)
+	logBegin("Starting backends")
 	for name in getInstances():
 		inst = mdb.getInstance(name)
 		if not inst:
-			logError('Instance does not exist on this node',name)
+			logError('Instance does not exist',name)
 			continue
 		if not inst.has_key('type') or inst['type'] != "RAID": continue		
 		for host in inst['hosts']:
