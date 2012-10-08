@@ -14,5 +14,5 @@ setup(
 	author = "Mad Penguin",
 	author_email = "madpenguin@linux.co.uk",
 	license = "GPLv3",
-	scripts = ["VDCCloud/fc_gluster","VDCCloud/fc_mongo.py"],
+	scripts = ["VDCCloud/fc_gluster","VDCCloud/fc_mongo.py","VDCCloud/fc_logging.py"],
 	)

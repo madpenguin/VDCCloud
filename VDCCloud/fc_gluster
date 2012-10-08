@@ -4,11 +4,9 @@
 #
 #	Mad Pengiun <madpenguin@linux.co.uk> (c) 2012
 #
-#	TODO:: convert /etc/fc_gluster into a persistent mapping
 #	TODO:: modprobe for flashcache and nbd @ start
 #	TODO:: fix auto-boot on node1 and node2 re; mount gluster
 # 	TODO:: submit patches for FC re; more stats info
-#	TODO:: hive off code into Library
 #
 ###############################################################################
 #
@@ -38,6 +36,7 @@ from libvirt import VIR_DOMAIN_RUNNING		# is domain running on this node
 #	Our Code Libraries
 #
 from fc_mongo import Database
+from fc_logging import logBegin,logEnd,logMiddle,logYN,logError
 #
 #	Handy shortcuts
 #
@@ -50,11 +49,10 @@ CONFIG_DIR 	= '/etc/fc_gluster/'
 DATABASE 	= '/etc/flashcache.dbm'
 HOSTNAME 	= os.uname()[1]
 FALLOW_DELAY 	= 300
-MAX_BLOCK	= 64				# max NBD devices we're going to allow
 #
-sys.path.append(CONFIG_DIR)	# TODO:: remove!
+#	Initialise !
 #
-mdb = Database()
+mdb 		= Database()
 #
 ###############################################################################
 #
@@ -98,57 +96,6 @@ def getInstances():
 #
 ###############################################################################
 #
-def doLoad(inst):
-	""" load the dynamic configuration for a given instance """
-	try:
-		config = __import__(inst)
-	except ImportError:
-		print "No configuration for ",inst
-		exit(1)
-	return config
-#
-###############################################################################
-#
-def logBegin(text,name=''):
-	""" start logging a line to stdout """
-	print colored("*","blue"),
-	print colored(text,"green"),
-	if name <> '': print colored(name,"yellow"),
-	sys.stdout.flush()
-#
-###############################################################################
-#
-def logEnd(text,ok):
-	""" stop logging and print a status message """
-	if ok:
-		color = "green"
-	else:	color = "red"
-	print "["+colored(text,color)+"]"
-#
-###############################################################################
-#
-def logMiddle(text,col):
-	print "["+colored(text,col)+"]",
-	sys.stdout.flush()
-#
-###############################################################################
-#
-def logYN(text):
-	while True:
-		logBegin(text+colored(" (y/N) ",yellow))
-		choice = raw_input().lower()
-		if not choice in ['y','N','']: continue
-		if choice == 'y': return True
-		return False
-
-def logError(text,name):
-	""" standard format for error display """
-	print " "+colored("*","blue"),
-	print colored(text,"green"),
-	print "["+colored(name,"red")+"]"
-#
-###############################################################################
-#
 def isRunning(inst):
 	return os.path.exists("/dev/mapper/"+inst)
 #
@@ -168,6 +115,11 @@ def setParam(inst,dev,param,v):
 def run(cmd):
 	""" run a shell command in a sub-shell """
 	pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
+	result = pipe.communicate()
+	return pipe.returncode
+#
+def background(cmd):
+	pipe = sub.Popen(cmd,bufsize=16384,stderr=sub.PIPE,shell=True)
 	result = pipe.communicate()
 	return pipe.returncode
 #
@@ -193,7 +145,7 @@ def do_stats():
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 	for inst in mdb.getInstances(HOSTNAME):
 		name = inst['name']
-		ssd = "/dev/%s/%s" % (inst['vol_group'],name)
+		ssd = "/dev/%s/%s" % (inst['cache'],name)
 		dev = mdb.getDevice(HOSTNAME,name)
 
 		if not isRunning(name):
@@ -240,6 +192,12 @@ def do_stats():
 
 		stats = stats.replace("\n"," ")
 		stats = stats.split(" ")
+		
+		ssd_reads = 0
+		ssd_writes = 0
+		disk_reads = 0
+		disk_writes = 0
+		
 		for stat in stats:
 			if len(stat)<2: continue
 			key,val = stat.split("=")
@@ -258,7 +216,12 @@ def do_stats():
 		print "| %s (%s)"   % (colored("%8d" 	% cached,"green"),	colored("%3d%%" % percent,"yellow")),
 		print "| %s (%s)"   % (colored("%8d" 	% dirtyb,"green"),	colored("%3d%%" % dirtyp,"yellow")),
 		print "| %s (%s)"   % (colored("%8d" 	% total_reads,"green"),	colored("%3d%%" % rp,"yellow")),
-		print "| %s (%s) |" % (colored("%8d" 	% total_writes,"green"),colored("%3d%%" % wp,"yellow"))
+		print "| %s (%s) |" % (colored("%8d" 	% total_writes,"green"),colored("%3d%%" % wp,"yellow")),
+		if inst.has_key('type'):
+			if inst['type'] == 'RAID':
+				devices = mdb.getDevices(HOSTNAME,name)
+				for device in devices: device,
+		print
 
 	print "+"+25*"-"+"+"+7*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*"-"+"+"+17*'-'+'+'
 #
@@ -277,34 +240,39 @@ def do_stop(remove=False):
 		if not isRunning(name):
 			logError('Instance is already stopped',name)
 			continue
-		
-		dev = mdb.getDevice(HOSTNAME,name)
-		if not dev:
-			logError('No device known for',name)
-			continue
-			
+				
 		logBegin('Stopping',name)			
-		ssd = "/dev/%s/%s" % (inst['vol_group'],name)		
+		ssd = "/dev/%s/%s" % (inst['cache'],name)		
 		
 		if run("/sbin/dmsetup remove %s" % name):
 			logEnd('dmsetup Failed',False)
-		else: 	
-			logMiddle('dm stopped',"green")
+			continue
+
+		logMiddle('dm stopped',"green")
+		if inst['type'] == 'RAID':
+			if not do_down(inst): continue
+		else:
+			dev = mdb.getDevice(HOSTNAME,name)
+			if not dev:
+				logError('No device known for',name)
+				continue
+			
 			if run("qemu-nbd -d /dev/"+dev):
 				logMiddle(dev,"red")
 				logEnd('Fail',False)
+				continue
 			else:	
 				logMiddle(dev,"blue")
-				setParam(inst,dev,"do_sync",1)
-				if not remove:
-					logEnd('Ok',True)
-				else:
-					logMiddle('remove','blue')
-					if run("lvremove -f "+ssd):
-						logEnd('Fail',False)
-					else:
-						mdb.delDevice(HOSTNAME,name)
-						logEnd('Ok',True)
+
+		if not remove:
+			logEnd('Ok',True)
+		else:
+			logMiddle('remove','blue')
+			if run("lvremove -f "+ssd):
+				logEnd('Fail',False)	
+			else:	
+				mdb.delDevice(HOSTNAME,name)
+				logEnd('Ok',True)
 #
 ###############################################################################
 #
@@ -318,7 +286,15 @@ def do_start():
 
 		if isRunning(name):
 			logError('Instance is already running',name)
-			continue 
+			continue
+		
+		if inst['type'] == 'RAID':
+			do_up(inst)
+			continue
+		
+		if inst['type'] != 'gluster':
+			logError('Unknown instance type',name)
+			continue
 				
 		img = "/"+inst['path']+"/"+name+".img"
 		if not os.path.exists(img):
@@ -337,8 +313,8 @@ def do_start():
 			logMiddle('new::'+dev,"green")
 			mdb.updateDevice(HOSTNAME,name,dev)
 			
-		if run("qemu-nbd -c /dev/"+dev+" "+img):	
-			logEnd(dev,Fail)
+		if run("qemu-nbd -c /dev/"+dev+" "+img+" --nocache"):	
+			logEnd(dev,False)
 			continue
 
 		logMiddle("connect","blue")
@@ -350,7 +326,7 @@ def do_start():
 				continue
 		else:
 			logMiddle('lvm',"blue")
-			if run("lvcreate -L%dG -n%s %s" % (inst['cache_size'],name,inst['vol_group'])):
+			if run("lvcreate -L%dG -n%s %s" % (inst['cache_size'],name,inst['cache'])):
 				logEnd('fail',False)
 				continue
 			
@@ -582,6 +558,180 @@ def do_cacheoff():	setParameters('Enabling Cache',{"cache_all":0,"do_sync":1,"re
 def do_clearstats():	setParameters('Enabling Cache',{"zero_stats":1})
 def do_remove():	do_stop(remove=True)
 #
+def do_settype():
+	try:
+		typ = argv[3]
+		name = argv[2]
+	except:
+		do_usage()
+		
+	inst = mdb.getInstance(HOSTNAME,name)
+	if not inst:
+		logError('Instance does not exist on this node',name)
+		return
+		
+	if not mdb.setType(name,typ):
+		logError('Set type failed for',name)
+		return
+		
+	print "Done."
+
+def do_sethosts():
+	try:
+		name = argv[2]
+		update = {}
+		for host in argv[3:]:
+			host,port = host.split(":")
+			update[host] = str(port)
+	except:
+		do_usage()
+	
+	inst = mdb.getInstance(HOSTNAME,name)
+	if not inst:
+		logError('Instance does not exist on this node',name)
+		return
+		
+	if not mdb.setHosts(name,update):
+		logError('Set hosts failed for',name)
+		return
+		
+	print "Done."
+
+def do_setdevice():
+	try:
+		name = argv[2]
+		dev = argv[3]
+	except:
+		do_usage()
+	
+	inst = mdb.getInstance(HOSTNAME,name)
+	if not inst:
+		logError('Instance does not exist on this node',name)
+		return
+		
+	if not mdb.setDevice(HOSTNAME,name,dev):
+		logError('Set device failed for',name)
+		return
+		
+	print "Done."
+###############################################################################
+#
+#	do_up - start a remote RAID array / fc combo
+#
+def do_up(inst):
+	""" start one or more instances """
+	name = inst['name']
+	ssd = "/dev/%s/%s" % (inst['cache'],name)
+		
+	logBegin('Starting',name)			
+		
+	devices = mdb.getDevices(HOSTNAME,name)
+		
+	if not devices:
+		if not mdb.setDevices(inst):	
+			logEnd('Missing devices',False)
+			return
+		devices = mdb.getDevices(HOSTNAME,name)
+		if not devices:
+			logEnd('Device creation failed',False)
+			return
+
+	dlist = devices
+	mdadm = "mdadm --assemble /dev/md/"+name
+	up = 0
+	for host in inst['hosts']:
+		port = inst['port']
+		dev = dlist.pop()
+		cmd = "nbd-client "+host+" "+port+" "+"/dev/"+dev
+		if not run(cmd):
+			up += 1
+			logMiddle(dev,"green")
+			mdadm += " "+"/dev/"+dev					
+		else:	logMiddle(dev,"red")
+			
+	if not up:
+		logEnd("Fail",False)
+		logError("Insufficient devices to start RAID",name)
+		return
+	
+	if run(mdadm):	
+		logEnd(mdadm,False)
+		return
+		
+	logMiddle("RAID-up","blue")
+
+	if os.path.exists(ssd):
+		logMiddle('load',"blue")
+		if run("/sbin/flashcache_load "+ssd+" "+name):
+			logEnd('fail',False)
+			return
+	else:
+		logMiddle('create',"blue")
+		cmd = "lvcreate -L%sG -n%s %s" % (inst['cache_size'],name,inst['cache'])
+		if run(cmd):
+			logEnd('fail',False)
+			print cmd			
+			return
+			
+		logMiddle('lvm-create',"blue")
+		cmd = "/sbin/flashcache_create -p back -s%sg %s %s /dev/md/%s" % (inst['cache_size'],name,ssd,name)
+		if run(cmd):
+			logEnd('fail',False)
+			print cmd
+			return
+
+	logMiddle('RA::8192',"blue")
+	if run("blockdev --setra 8192 /dev/mapper/"+name): logMiddle('fail',"red")
+	setParam(inst,dev,"reclaim_policy",1)
+	setParam(inst,dev,"fallow_delay",FALLOW_DELAY)
+	logEnd('Ok',"green")
+#
+###############################################################################
+#
+#	do_down - take down a RAID instance
+#
+def do_down(inst):
+	
+	name = inst['name']
+	
+	if run("mdadm --stop /dev/md/"+name):
+		logMiddle('failed to stop RAID',"red")
+		logEnd('Fail',False)
+		return False
+
+	logMiddle('RAID','blue')
+	devices = mdb.getDevices(HOSTNAME,name)
+		
+	if not devices:
+		logEnd('Missing devices',Fail)
+		return False
+		
+	for dev in devices:
+		cmd = "nbd-client -d /dev/%s" % dev
+		if run(cmd):
+			logMiddle(dev,'red')
+		else:	logMiddle(dev,"green")
+		
+	return True
+#
+###############################################################################
+#
+#	do_addraid - add a new RAID instance
+#
+def do_addraid():
+	name		= argv[2]
+	port		= argv[3]
+	cache		= argv[4]
+	cache_size	= argv[5]
+	vol		= argv[6]
+	vol_size	= argv[7]
+	hosts		= argv[8:]
+	if mdb.getInstance(HOSTNAME,name):
+		logError("Instance already exists",name)
+		return
+	mdb.addRaid(name,port,cache,cache_size,vol,vol_size,hosts)
+	print "Done."
+#
 ###############################################################################
 #
 #	All possible entry points for the routine
@@ -599,6 +749,10 @@ routines = {
 	'start'		:do_start,
 	'migrate'	:do_migrate,
 	'pingpong'	:do_pingpong,
+	'settype'	:do_settype,
+	'sethosts'	:do_sethosts,
+	'setdevice'	:do_setdevice,
+	'addraid'	:do_addraid,
 }
 #
 #	Display a list of possible command (dynamic)
@@ -609,6 +763,7 @@ def do_usage():
 		if s <> '': s+='|'
 		s += routine
 	print 'service fc_gluster [%s]' % s
+	exit(1)
 #
 #	This is the main command parser
 #
