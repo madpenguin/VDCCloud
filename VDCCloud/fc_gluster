@@ -84,12 +84,12 @@ def delay(secs):
 #
 ###############################################################################
 #
-def getInstances():
+def getInstances(host=HOSTNAME):
 	""" return the names of the instances to process """
 	if len(argv)>2:	return argv[2:]
 	else:
 		instances = []
-		results = mdb.getInstances(HOSTNAME)
+		results = mdb.getInstances(host)
 		for result in results:
 			instances.append(result['name'])
 		return instances
@@ -728,8 +728,8 @@ def do_backup():
 		return
 	
 	ip = host['ip']
-	logBegin("Starting backends")
-	for name in getInstances():
+	logBegin("Starting backends for",HOST)
+	for name in getInstances(HOST):
 		inst = mdb.getInstance(name)
 		if not inst:
 			logError('Instance does not exist',name)
