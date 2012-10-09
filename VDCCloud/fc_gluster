@@ -640,6 +640,8 @@ def do_up(inst):
 	for host in inst['hosts']:
 		port = inst['port']
 		dev = dlist.pop()
+		cmd = "nbd-client -d /dev/%s" % dev
+		run(cmd)
 		cmd = "nbd-client "+host+" "+port+" "+"/dev/"+dev
 		if not run(cmd):
 			up += 1
@@ -878,13 +880,23 @@ def do_addraid():
 def do_createR10():
 	
 	name = argv[2]
+	HOST = HOSTNAME.split(".")[0]
 	
 	inst = mdb.getInstance(name)
 	if not inst:
 		logError("Instance does not exist",inst)
+		return
 			
-	logBegin('Creating',name)						
+	if os.path.exists("/dev/md/"+name):
+		logError("Array is already running, please stop it first!",name)
+		return
+			
+	if not logYN('This will DELETE / RE-INITIALIZE instance :: '+name):
+		logError("Aborted - delete on ",name)
+		return
+
 				
+	logBegin('Creating new RAID array',name)				
 	devices = mdb.getDevices(HOSTNAME,name)
 		
 	if not devices:
@@ -897,31 +909,44 @@ def do_createR10():
 			return
 
 	dlist = devices
-	mdadm = "mdadm --create /dev/md/"+name+" --level=10 -pf2 -c64 --bitmap-chunk=4M --bitmap=internal"
-	up = 0
+	mdadm = "mdadm --create /dev/md/"+name+" --name="+name+" --level=10 -pf2 -c64 --bitmap-chunk=4M --bitmap=internal -n%d" % len(inst['hosts'])
+	
 	for host in inst['hosts']:
 		port = inst['port']
 		dev = dlist.pop()
+		cmd = "nbd-client -d /dev/%s" % dev
+		run(cmd)
+		
 		cmd = "nbd-client "+host+" "+port+" "+"/dev/"+dev
 		if not run(cmd):
-			logMiddle(dev,"green")
 			mdadm += " "+"/dev/"+dev
+			logMiddle("zero::%s" % dev,"blue")
+			cmd = "mdadm --zero-superblock /dev/%s" % dev
+			run(cmd)			
 		else:
-			logMiddle(dev,"red")
 			mdadm += " missing"
-		up += 1
-		
-	if not up:
-		logEnd("Fail",False)
-		logError("Insufficient devices to start RAID",name)
+			logMiddle(dev,"red")
+				
+	pid = os.fork()
+	if not pid:
+		io = open("/tmp/fc_gluster.log","a")
+		sys.stdin.close()
+		os.dup2(io.fileno(), sys.stdout.fileno())
+		os.dup2(io.fileno(), sys.stderr.fileno())
+		args = mdadm.split(" ")		
+		os.execv('/sbin/mdadm',args)
+		exit(1)
+				
+	pid,status = os.wait()
+	if status == 0:
+		if run("mdadm --stop /dev/md/"+name):
+			logEnd('Error stopping array',False)
+			return	
+	else:
+		logEnd('Error on MDADM',False)
 		return
 	
-	mdadm += " -n%d" % up
-	if run(mdadm):	
-		logEnd(mdadm,False)
-		return
-
-	
+	logEnd("Ok",True)
 #
 ###############################################################################
 #

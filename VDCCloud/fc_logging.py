@@ -36,9 +36,9 @@ def logMiddle(text,col):
 #
 def logYN(text):
 	while True:
-		logBegin(text+colored(" (y/N) ",yellow))
+		logBegin(text+colored(" (y/N) ","yellow"))
 		choice = raw_input().lower()
-		if not choice in ['y','N','']: continue
+		if not choice in ['y','n','']: continue
 		if choice == 'y': return True
 		return False
 

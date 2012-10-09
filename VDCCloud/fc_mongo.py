@@ -5,6 +5,7 @@
 ###############################################################################
 #
 import os
+import sys
 import pymongo
 from datetime import datetime
 #
@@ -215,3 +216,4 @@ class Database:
 		path = "/proc/%d" % result['pid']
 		if not os.path.exists(path): return False
 		return True
+					
