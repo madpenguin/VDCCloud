@@ -152,12 +152,11 @@ def do_stats():
 			continue
 
 		stats = ""
-		if dev:
-			path = "/proc/flashcache/"+name+"+"+dev+"/flashcache_stats"
-			if os.path.exists(path): 
-				io = open(path,"r")
-				stats = io.read()
-				io.close()
+		path = "/proc/flashcache/"+name+"+"+name+"/flashcache_stats"
+		if os.path.exists(path): 
+			io = open(path,"r")
+			stats = io.read()
+			io.close()
 
 		cmd = "dmsetup table %s" % name
 		pipe = sub.Popen(cmd,bufsize=8192,stdout=sub.PIPE,stderr=sub.PIPE,shell=True)
@@ -746,7 +745,7 @@ def do_backup():
 				
 				path = "/srv/%s/%s.img" % (inst["vol"],name)
 				if not os.path.exists(path):
-					cmd = 'qemu-img create %s %sG' % (path,inst['vol_size'])
+					cmd = 'qemu-img create -f qcow2 %s %sG' % (path,inst['vol_size'])
 					if run(cmd):
 						logEnd('Create failed',False)
 						logError(cmd)
@@ -836,6 +835,8 @@ def do_backstatus():
 		if not inst.has_key('type') or inst['type'] != "RAID": continue		
 		for host in inst['hosts']:
 			process = mdb.procQuery(host,name)
+			if not process: continue
+			if not process.has_key('start'): continue
 			if process:
 				start = str(process['start']).split(".")[0]
 				start = colored("%-20s" % start,"green")
@@ -939,6 +940,7 @@ def do_createR10():
 				
 	pid,status = os.wait()
 	if status == 0:
+		time.sleep(2)
 		if run("mdadm --stop /dev/md/"+name):
 			logEnd('Error stopping array',False)
 			return	
