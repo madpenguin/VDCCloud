@@ -876,15 +876,20 @@ def do_addraid():
 #	do_createR10 - create a RAID10 on the block devices
 #
 def do_createR10():
+	
 	name = argv[2]
+	
 	inst = mdb.getInstance(name)
 	if not inst:
 		logError("Instance does not exist",inst)
 			
-	devices = mdb.getDevices(HOSTNAME,name)	
+	logBegin('Creating',name)						
+				
+	devices = mdb.getDevices(HOSTNAME,name)
+		
 	if not devices:
 		if not mdb.setDevices(inst):	
-			logError('Missing devices',False)
+			logEnd('Missing devices',False)
 			return
 		devices = mdb.getDevices(HOSTNAME,name)
 		if not devices:
@@ -892,15 +897,30 @@ def do_createR10():
 			return
 
 	dlist = devices
-	hosts = inst['hosts']
-	mdadm = "mdadm --create /dev/md/"+name+" --level=10 -pf2 -n%d -c64 --bitmap-chunk=4M --bitmap=internal" % len(hosts)
-
-	for host in hosts:
+	mdadm = "mdadm --create /dev/md/"+name+" --level=10 -pf2 -c64 --bitmap-chunk=4M --bitmap=internal"
+	up = 0
+	for host in inst['hosts']:
+		port = inst['port']
 		dev = dlist.pop()
-		mdadm += " "+"/dev/"+dev					
+		cmd = "nbd-client "+host+" "+port+" "+"/dev/"+dev
+		if not run(cmd):
+			logMiddle(dev,"green")
+			mdadm += " "+"/dev/"+dev
+		else:
+			logMiddle(dev,"red")
+			mdadm += " missing"
+		up += 1
+		
+	if not up:
+		logEnd("Fail",False)
+		logError("Insufficient devices to start RAID",name)
+		return
+	
+	mdadm += " -n%d" % up
+	if run(mdadm):	
+		logEnd(mdadm,False)
+		return
 
-	print "Please Use;"
-	print mdadm
 	
 #
 ###############################################################################
