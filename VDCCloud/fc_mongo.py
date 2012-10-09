@@ -175,3 +175,43 @@ class Database:
 
 	def getHost(self,host):
 		return self.db.hosts.find_one({'host':host})
+
+	def procRegister(self,host,name,pid):
+		""" track a running process """
+		now = datetime.utcnow()
+		search = {
+			"name"		: name,
+			"host"		: host,
+		}		
+		update = {
+			"name"		: name,
+			"host"		: host,
+			"pid"		: pid,
+			"start"		: now
+		}
+		self.db.processes.find_and_modify(search, update , new=True, upsert=True)
+
+	def procQuery(self,host,name):
+		record = {
+			"name"		: name,
+			"host"		: host,			
+		}
+		return self.db.processes.find_one(record)
+
+	def procKill(self,host,name):
+		record = {
+			"name"		: name,
+			"host"		: host,			
+		}
+		return self.db.processes.remove(record)
+	
+	def procRunning(self,host,name):
+		search = {
+			"name"		: name,
+			"host"		: host,
+		}		
+		result = self.db.processes.find_one(search)
+		if not result: return False
+		path = "/proc/%d" % result['pid']
+		if not os.path.exists(path): return False
+		return True
