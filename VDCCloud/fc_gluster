@@ -1009,7 +1009,7 @@ def do_local():
 			logError("Unknown instance",name)
 			continue
 		logBegin('Setting host as local',name)
-		mdb.setLocal(HOSTNAME)
+		mdb.setLocal(name)
 		logEnd('Ok',True)
 			
 
