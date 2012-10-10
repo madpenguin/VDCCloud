@@ -9,7 +9,7 @@ import sys
 import pymongo
 from datetime import datetime
 #
-HOSTNAME 	= os.uname()[1]
+HOSTNAME 	= os.uname()[1].split(".")[0]
 MAX_BLOCK	= 64				# max NBD devices we're going to allow
 #
 class Database:
@@ -260,4 +260,9 @@ class Database:
 		for result in results:
 			devices.append(result['device'])
 
-		return devices	
+		return devices
+	
+	def setLocal(self,name):
+		search = { "name" : name }
+		update = { "$set" : { "host" : HOSTNAME }}
+		self.db.instances.find_and_modify(search, update , new=False, upsert=False)

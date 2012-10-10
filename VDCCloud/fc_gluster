@@ -997,8 +997,20 @@ def do_fixraid():
 				cmd = "mdadm --re-add /dev/md/"+name+" /dev/"+dev
 				print cmd
 				run(cmd)
-				
-				
+#
+###############################################################################
+#
+#	do_local
+#
+def do_local():
+	""" make a given instance local to this machine """
+	for name in getInstances():
+		if not mdb.getInstance(name):
+			logError("Unknown instance",name)
+			continue
+		logBegin('Setting host as local',name)
+		mdb.setLocal(HOSTNAME)
+		logEnd('Ok',True)
 			
 
 #		parts = line.split(" ")
@@ -1061,7 +1073,8 @@ routines = {
 	'backdown'	:do_backdown,
 	'backstatus'	:do_backstatus,
 	'createR10'	:do_createR10,
-	'fixRAID'	:do_fixraid
+	'fixRAID'	:do_fixraid,
+	"local"		:do_local
 }
 #
 #	Display a list of possible command (dynamic)
