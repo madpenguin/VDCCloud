@@ -533,9 +533,9 @@ def setParameters(intro,param):
 			continue
 				
 		dev = mdb.getDevice(HOSTNAME,name)
-		if not dev:
-			logError('No NBD device registered for',name)
-			continue
+		if not dev: dev = name
+		#	logError('No NBD device registered for',name)
+		#	continue
 			
 		logBegin(intro,name)
 		logMiddle(dev,'blue')
@@ -634,7 +634,7 @@ def do_up(inst):
 			return
 
 	dlist = devices
-	mdadm = "mdadm --assemble /dev/md/"+name
+	mdadm = "mdadm --assemble --run /dev/md/"+name
 	up = 0
 	for host in inst['hosts']:
 		port = inst['port']
@@ -645,8 +645,10 @@ def do_up(inst):
 		if not run(cmd):
 			up += 1
 			logMiddle(dev,"green")
-			mdadm += " "+"/dev/"+dev					
+			mdadm += " "+"/dev/"+dev			
 		else:	logMiddle(dev,"red")
+		mdb.regClient(HOSTNAME,name,dev,host)
+		
 			
 	if not up:
 		logEnd("Fail",False)
@@ -710,6 +712,7 @@ def do_down(inst):
 		if run(cmd):
 			logMiddle(dev,'red')
 		else:	logMiddle(dev,"green")
+		mdb.unregClient(HOSTNAME,name,dev)		
 		
 	return True
 #
@@ -949,6 +952,89 @@ def do_createR10():
 		return
 	
 	logEnd("Ok",True)
+	
+#
+###############################################################################
+#
+#	do_fixraid
+#
+def do_fixraid():
+	
+	for name in getInstances(False):	
+		if not isRunning(name): continue
+		inst = mdb.getInstance(name)
+		path = "/dev/md/"+name
+		device = os.readlink(path).split("/")[1]
+			
+		devices = []
+		io = open("/proc/mdstat","r")
+		while True:
+			line = io.readline()
+			if not line: break
+			parts = line.split(" ")
+			if parts[0] != device: continue
+			for part in parts:
+				if part[:3] != "nbd": continue
+				if "(F)" in part: continue
+				dev = part.split("[")[0]
+				devices.append(dev)
+				
+		print name,device,devices
+		needed = mdb.getNBDs(HOSTNAME,name)
+		for dev in needed:
+			if not dev in devices:
+				print "We're missing device:",dev
+				rec = mdb.getClient(HOSTNAME,name,dev)			
+				cmd = "nbd-client "+rec['server']+" "+inst['port']+" "+"/dev/"+dev
+				print cmd
+				run(cmd)
+				cmd = "mdadm --fail /dev/md/"+name+" /dev/"+dev
+				print cmd
+				run(cmd)
+				cmd = "mdadm --remove /dev/md/"+name+" /dev/"+dev
+				print cmd
+				run(cmd)				
+				cmd = "mdadm --re-add /dev/md/"+name+" /dev/"+dev
+				print cmd
+				run(cmd)
+				
+				
+			
+
+#		parts = line.split(" ")
+#		device = parts[0]
+#		line = io.readline()
+#		parts = line.split
+#			for part in parts[1:]:
+#				if "(F)" in part:
+#					dev = part.split("[")[0]
+#					print device,dev
+#	io.close()
+#	
+	
+	
+#		pids=os.listdir('/proc') 
+#		for pid in sorted(pids): 
+#			try: 
+#				int(pid) 
+#			except ValueError: 
+#				continue 
+#			fd_dir=os.path.join('/proc', pid, 'fd') 
+#			for file in os.listdir(fd_dir): 
+#				try: 
+#					link=os.readlink(os.path.join(fd_dir, file)) 
+#				except OSError: 
+#					continue 
+#				files.append(link)
+#		
+##		index = 0
+#		while index < MAX_BLOCK:
+#			path = "/dev/nbd%d" % index
+#			if not path in files: return "nbd%d" % index
+#			index += 1
+#			
+#	
+	
 #
 ###############################################################################
 #
@@ -974,7 +1060,8 @@ routines = {
 	'backup'	:do_backup,
 	'backdown'	:do_backdown,
 	'backstatus'	:do_backstatus,
-	'createR10'	:do_createR10
+	'createR10'	:do_createR10,
+	'fixRAID'	:do_fixraid
 }
 #
 #	Display a list of possible command (dynamic)

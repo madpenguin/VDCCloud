@@ -20,7 +20,7 @@ class Database:
 		#
 		mongo = pymongo.ReplicaSetConnection(
 			"data2:27017,data1:27017",
-			replicaSet="linux",
+			replicaSet="linux",slaveOk=True,
 			safe=True)
 
 		self.db = mongo.fc_gluster
@@ -216,4 +216,48 @@ class Database:
 		path = "/proc/%d" % result['pid']
 		if not os.path.exists(path): return False
 		return True
-					
+	
+	def regClient(self,host,name,device,server):
+		now = datetime.utcnow()
+		search = {
+			"name"		: name,
+			"host"		: host,
+			"device"	: device,
+		}
+		update = {
+			"name"		: name,
+			"host"		: host,
+			"device"	: device,
+			"server"	: server,
+			"start"		: now
+		}
+		self.db.processes.find_and_modify(search, update , new=True, upsert=True)
+
+	def unregClient(self,host,name,device):
+		now = datetime.utcnow()
+		search = {
+			"name"		: name,
+			"host"		: host,
+			"device"	: device,
+		}
+		self.db.processes.remove(search)
+		
+	def getClient(self,host,name,device):
+		search = {
+			"name"		: name,
+			"host"		: host,
+			"device"	: device,
+		}
+		return self.db.processes.find_one(search)
+	
+	def getNBDs(self,host,name):
+		search = {
+			"name"		: name,
+			"host"		: host,
+		}
+		results = self.db.processes.find(search)
+		devices = []
+		for result in results:
+			devices.append(result['device'])
+
+		return devices	
