@@ -264,5 +264,5 @@ class Database:
 	
 	def setLocal(self,name):
 		search = { "name" : name }
-		update = { "$set" : { "host" : HOSTNAME }}
+		update = { "$set" : { "node" : HOSTNAME }}
 		self.db.instances.find_and_modify(search, update , new=False, upsert=False)
