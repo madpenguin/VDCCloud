@@ -979,24 +979,23 @@ def do_fixraid():
 				dev = part.split("[")[0]
 				devices.append(dev)
 				
-		print name,device,devices
 		needed = mdb.getNBDs(HOSTNAME,name)
 		for dev in needed:
 			if not dev in devices:
-				print "We're missing device:",dev
-				rec = mdb.getClient(HOSTNAME,name,dev)			
-				cmd = "nbd-client "+rec['server']+" "+inst['port']+" "+"/dev/"+dev
-				print cmd
-				run(cmd)
-				cmd = "mdadm --fail /dev/md/"+name+" /dev/"+dev
-				print cmd
-				run(cmd)
-				cmd = "mdadm --remove /dev/md/"+name+" /dev/"+dev
-				print cmd
-				run(cmd)				
-				cmd = "mdadm --re-add /dev/md/"+name+" /dev/"+dev
-				print cmd
-				run(cmd)
+				if logYN('Instance %s [RAID %s] is missing %s, rebuild' % (colored(name,"yellow"),colored(device,"yellow"),colored(dev,"yellow"))):
+					rec = mdb.getClient(HOSTNAME,name,dev)			
+					cmd = "nbd-client "+rec['server']+" "+inst['port']+" "+"/dev/"+dev
+					logError(cmd,name)
+					run(cmd)
+					cmd = "mdadm --fail /dev/md/"+name+" /dev/"+dev
+					logError(cmd,name)
+					run(cmd)
+					cmd = "mdadm --remove /dev/md/"+name+" /dev/"+dev
+					logError(cmd,name)
+					run(cmd)				
+					cmd = "mdadm --re-add --run /dev/md/"+name+" /dev/"+dev
+					logError(cmd,name)
+					run(cmd)
 #
 ###############################################################################
 #
