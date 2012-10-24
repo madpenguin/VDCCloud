@@ -10,16 +10,17 @@
  *		Designed to record checksum and transaction log information
  *		More compact than original code
  *		For use with Caching / RAID nbd-client
- *      
+ *
+ *	TODO :: Backgrounding
+ *     	TODO :: Forking / detaching children
  */
 
-/*
- *	Headers / Include Files
- */
-
+//	Headers / Include Files
+ 
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <syslog.h>
 #include <signal.h>
 #include <errno.h>
 #include <netinet/tcp.h>
@@ -32,8 +33,11 @@
 #include <time.h>
 #include <fcntl.h>
 
-//	Flags to indicate new-style negotiation
-//	FIXME :: This is potentially obsolete
+/*
+ *	Flags to indicate new-style negotiation
+ *	TODO :: This is potentially obsolete
+ *
+ */
 
 #define NBD_FLAG_FIXED_NEWSTYLE (1 << 0)
 
@@ -98,16 +102,44 @@ struct nbd_reply {
         uint32_t magic;
         uint32_t error;           /* 0 = ok, else error   */
         char handle[8];         /* handle you got from request  */
-};
+} __attribute__ ((packed));
 
 //	Global Variables
 //	As we will eventually fork one of these per connection, it's just easier
 //	to use global variables than passing file descriptora around.
 
-int db;
-uint64_t off;
-uint32_t len;
-uint32_t cmd;
+int 		sock;		// current client connection
+int 		db;		// current database connection
+uint64_t 	off;		// offset of current transation
+uint32_t 	len;		// length of current transaction
+uint32_t 	cmd;		// command of current transaction
+int 		debug = 0;	// global debug flag
+char		pbuf[1024];	// print buffer
+char* 		cmds[]	= { "READ" , "WRITE" , "CLOSE" };
+
+void doLog(char *text)
+{
+	if(debug<2) {
+		syslog(LOG_INFO,"%s",text);
+		return;
+	}	
+	time_t t = time(NULL);
+	char *now = ctime(&t);
+	now[strlen(now)-1]=0;
+	printf("%s :nbd: %s\n",now,text);
+}
+
+int doError(char *text)
+{
+	char msg[256];
+	snprintf(msg,sizeof(msg),
+		 "error:%s socket=%d db=%d off=%lld len=%lld errno=%d",
+		 text,sock,db,(unsigned long long)off,(unsigned long long)len,errno);
+	if(debug<2)
+		syslog(LOG_ERR,"%s",msg);
+	else	doLog(msg);	
+	return False;
+}
 
 //	getSocket - Instantiate a network socket and set up all the trimmings ...
 
@@ -117,7 +149,7 @@ int getSocket()
 	char    *port           = "10809";
 	struct  addrinfo *ai    = NULL;
 	struct  addrinfo hints;
-	int     sock;
+	int 	s;
 
 	memset(&hints,'\0',sizeof(hints));
 	hints.ai_flags      = AI_PASSIVE | AI_ADDRCONFIG | AI_NUMERICSERV;
@@ -133,90 +165,101 @@ int getSocket()
 	    printf("Unable to get address info (%d)\n",errno);
 	    exit(errno);
 	}
-	sock = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-	if(sock<0) {
+	s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+	if(s<0) {
 	    printf("Unable to allocate socket (%d)\n",errno);
 	    exit(errno);    
 	}
 	freeaddrinfo(ai);
 	//
-	if(setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(int)) == -1) {
+	if(setsockopt(s,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(int)) == -1) {
 	    printf("Unable to set REUSEADDR on socket (%d)\n",errno);
 	    exit(errno);
 	}
-	if(setsockopt(sock,SOL_SOCKET,SO_LINGER,&l,sizeof(l)) == -1) {
+	if(setsockopt(s,SOL_SOCKET,SO_LINGER,&l,sizeof(l)) == -1) {
 	    printf("Unable to set LINGER on socket (%d)\n",errno);
 	    exit(errno);
 	}
-	if(setsockopt(sock,SOL_SOCKET,SO_KEEPALIVE,&yes,sizeof(int)) == -1) {
+	if(setsockopt(s,SOL_SOCKET,SO_KEEPALIVE,&yes,sizeof(int)) == -1) {
 	    printf("Unable to set KEEPALIVE on socket (%d)\n",errno);
 	    exit(errno);
 	}
-	if(bind(sock, ai->ai_addr, ai->ai_addrlen)) {
+	if(bind(s, ai->ai_addr, ai->ai_addrlen)) {
 	    if(errno=EADDRINUSE)
 	            printf("Address is already in use (%d)\n",errno);
 	    else    printd("Error binding to socket (%d)\n",errno);
 	    exit(errno);
 	}
-	if(listen(sock,1)) {
+	if(listen(s,1)) {
 	    printf("Error LISTENING on socket (%d)\n",errno);
 	    exit(errno);
 	}
-	return sock;
-}
-
-void doLog(char *text,int sock)
-{
-	time_t t = time(NULL);
-	char *now = ctime(&t);
-	now[strlen(now)-1]=0;
-	printf("%s :: %s",now,text);
-	if(sock) printf(" (sock=%d)",sock);
-	if(errno) printf(" [%d]",errno);
-	printf("\n");
+	return s;
 }
 
 //	getBytes - get data from the client (via Network)
 
-void getBytes(int sock, void *buf, size_t len)
+void getBytes(void *buf, size_t len)
 {
 	int bytes;
 	int max = len;
-    
-    //printf("Reading %d\n",(int)len);
+	char msg[1024];	
+	
+	if(debug>1) {
+		sprintf(msg,"getBytes=%d",(int)len);
+		doLog(msg);
+	}    
 	while( len ) {
 		bytes = read(sock,buf,len);
 		if( bytes <= 0) {
 			if( errno != EAGAIN ) {
-			doLog("Critical Error in READ",sock);
+			doLog("Critical Error in READ");
 			exit(errno);
 			}
+		} else {
+			if(debug>2) {
+				int i;	
+				char *ptr = (char*)buf;
+				for(i=0;i<bytes;i++) {
+					if(i>200) break;
+					printf("%02x ",*ptr++ && 255);
+				}
+				printf("\n");
+			}			
+			buf += bytes;
+			len -= bytes;
 		}
-		buf += bytes;
-		len -= bytes;
 	}
 }
 
 //	putBytes - Send information to the client (via Network)
 
-void putBytes(int sock, void *buf, size_t len)
+void putBytes(void *buf, size_t len)
 {
-    //printf("Writing %d\n",(int)len);
-    //int i;
-    //char *ptr = (char*)buf;
-    //for(i=0;i<len;i++) {
-    //    printf("%02x ",*ptr++);
-   // }
-    //printf("\n");
+	char msg[1024];
+	
+	if(debug>1) {
+		sprintf(msg,"putBytes=%d",(int)len);
+		doLog(msg);
+	}
+	if(debug>2) {
+		int i;		
+		char *ptr = (char*)buf;
+		for(i=0;i<len;i++) {
+			if(i>200) break;
+			printf("%02x ",*ptr++ && 255);
+		}
+		printf("\n");
+	}
 	if( write( sock,buf,len ) < 0) {
-		doLog("Critical Error in WRITE",sock);
+		doLog("Critical Error in WRITE");
 		exit(errno);
 	}
 }
 
 //	doConnectionMade - hangle a new incoming connection
 
-void doConnectionMade(int sock)
+void doConnectionMade()
 {
 	struct {
 		volatile uint64_t passwd __attribute__((packed));
@@ -228,29 +271,29 @@ void doConnectionMade(int sock)
 	nbd.magic  = htonll(OPTS_MAGIC);
 	nbd.flags  = htons(NBD_FLAG_FIXED_NEWSTYLE);
     
-	doLog("Connection Made",0);
-	putBytes(sock,&nbd,sizeof(nbd));
+	doLog("Connection Made");
+	putBytes(&nbd,sizeof(nbd));
 }
 
 //	sendReply - send a reply with a pre-determined format to the client
 
-static void sendReply(uint32_t opt, int sock, uint32_t reply_type, size_t datasize, void* data)
+static void sendReply(uint32_t opt,uint32_t reply_type, size_t datasize, void* data)
 {
 	uint64_t magic = htonll(0x3e889045565a9LL);
 	reply_type = htonl(reply_type);
 	uint32_t datsize = htonl(datasize);       
         
-	doLog("Reply",sock);
-	putBytes(sock,&magic,sizeof(magic));
-	putBytes(sock,&opt,sizeof(opt));
-	putBytes(sock,&reply_type,sizeof(reply_type));
-	putBytes(sock,&datsize,sizeof(datsize));
-	if(datasize) putBytes(sock,data,datasize);
+	doLog("sendReply");
+	putBytes(&magic,sizeof(magic));
+	putBytes(&opt,sizeof(opt));
+	putBytes(&reply_type,sizeof(reply_type));
+	putBytes(&datsize,sizeof(datsize));
+	if(datasize) putBytes(data,datasize);
 }
 
 //	doNegotiate - negotiate a new connection with the client
 
-int doNegotiate(int sock)
+int doNegotiate()
 {
 	struct {
 	        volatile uint64_t magic __attribute__((packed));
@@ -259,7 +302,7 @@ int doNegotiate(int sock)
     
 	int working = True;
 	uint32_t flags;
-	getBytes(sock,&flags,sizeof(flags));
+	getBytes(&flags,sizeof(flags));
 	flags = htonl(flags);
 	    
 	uint32_t len;
@@ -267,39 +310,47 @@ int doNegotiate(int sock)
 	uint32_t opt;
 	   
 	char path[256];
+	int status = False;
 
-	while( working ) {
-		getBytes(sock,&nbd,sizeof(nbd));
+	doLog("Enter NEGOTIATION");
+	
+	do {
+		getBytes(&nbd,sizeof(nbd));
 		if(nbd.magic != htonll(OPTS_MAGIC)) {
-			doLog("Client Magic is bad",sock);
-			return False;
+			doError("Bad MAGIC from Client");
+			status = False;
+			working = False;	
+			break;
 		}
 		opt = ntohl(nbd.opts);
 		switch( opt )
 		{
 			case NBD_OPT_EXPORT_NAME:                
-				getBytes(sock,&len,sizeof(len));
+				getBytes(&len,sizeof(len));
 				len = ntohl(len);
 				name = malloc(len+1);
 				name[len]=0;
-				getBytes(sock,name,len);
+				getBytes(name,len);
 		
 				sprintf(path,"/dev/vols/blocks/%s",name);
 				db = open(path,O_RDWR,O_DIRECT);
 				if( db < 0) {
-					doLog("Unable to open BLOCK DEVICE",0);
-					doLog(path,0);
-					return False;
+					doError("Unable to open BLOCK DEVICE");
+					doError(path);
+					status = False;
+					working = False;
+					break;
 				}
 				working = False;
+				status = True;
 				free(name);
 				break;
 	
 			case NBD_OPT_LIST:
-				doLog("Received LIST from client",sock);
-				getBytes(sock,&len,sizeof(len));
+				doLog("Received LIST from client");
+				getBytes(&len,sizeof(len));
 				len=ntohl(len);
-				if(len) sendReply(opt, sock, NBD_REP_ERR_INVALID, 0, NULL);    
+				if(len) sendReply(opt, NBD_REP_ERR_INVALID, 0, NULL);    
                 
 				char buf[128];
 				char *ptr = (char*)&buf;
@@ -308,85 +359,78 @@ int doNegotiate(int sock)
 				memcpy(ptr,&len,sizeof(len));
 				ptr += sizeof(len);
 				memcpy(ptr,"demo",4);
-				sendReply(opt, sock, NBD_REP_SERVER, 8, buf);
-				sendReply(opt, sock, NBD_REP_ACK, 0, NULL);
+				sendReply(opt, NBD_REP_SERVER, 8, buf);
+				sendReply(opt, NBD_REP_ACK, 0, NULL);
 				break;
 	
 			case NBD_OPT_ABORT:
-				doLog("Received ABORT from client",sock);
-				return False;
+				doLog("Received ABORT from client");
+				status = False;
+				working = False;
+				break;
 	
 			default:
-				printf("Default=%d\n", opt );
+				doError("Unknown command");
 				break;
 		}
-	}
+	} while( working );
+	
+	if(!status) return False;
 	int64_t size = htonll(1024*1024*1024);
 	int16_t small = htons(1);
 	char zeros[124];
 	memset(zeros,0,sizeof(zeros));
-	putBytes(sock,&size,sizeof(size));
-	putBytes(sock,&small,sizeof(small));
-	putBytes(sock,&zeros,sizeof(zeros));
+	putBytes(&size,sizeof(size));
+	putBytes(&small,sizeof(small));
+	putBytes(&zeros,sizeof(zeros));
+	doLog("Exit NEGOTIATION [Ok]");
 	return True;
-}
-
-int dbError(char *text)
-{
-	char message[256];
-	sprintf(message,"__ERROR on %s :: Offset = %lld Len = %lld",
-		text,(unsigned long long)off,(unsigned long long)len);
-	doLog(message,0);
-	return False;
 }
 
 //	doSession - process a single client session
 
-void doSession(int sock)
+void doSession()
 {
-	doLog("Running client session",sock);
-	doConnectionMade(sock);
-	if(doNegotiate(sock)) {
+	struct nbd_request request;
+	struct nbd_reply reply;
+	char buffer[1024*132];
+	int readlen,bytes;
+	int running = True;
+
+	doLog("Enter SESSION");
+	doConnectionMade();
+	if(doNegotiate()) {
 	
-		doLog("Session",0);
-        
-		struct nbd_request request;
-		struct nbd_reply reply;
-		char buffer[1024*132];
-		int readlen,bytes;
-		char pbuf[128];
-		
-	//char *cmds[5];
-	//cmds[NBD_READ] ="READ  - ";
-	//cmds[NBD_WRITE]="WRITE - ";
-	//cmds[NBD_CLOSE]="CLOSE - ";
-        
-		int running = True;
-        
-		while( running ) {
+		doLog("Processing DATA requests ...");
+        		        
+		do {
             
-			getBytes(sock,&request,sizeof(request));
+			getBytes(&request,sizeof(request));
 			off = ntohll(request.from);
 			cmd = ntohl(request.type) & NBD_CMD_MASK_COMMAND;
 			len = ntohl(request.len);
 			reply.magic = htonl(NBD_REPLY_MAGIC);
 			reply.error = 0;
-	    
-	    //sprintf(pbuf,"%s block [%04llx] %lld blocks",cmds[cmd],(long long unsigned int)block,(long long unsigned int)blocks);
-	    //doLog(pbuf,sock);	    
-            //printf("Magic (%d), Req(%d) Off(%ld) Len(%d)\n",request.magic,cmd,off,len);
-            
+			if(debug) {	
+				snprintf(pbuf,sizeof(pbuf),"%s - block [%04llx] %ld blocks, off=%lld, len=%ld",	
+					cmds[cmd],						
+					(long long unsigned int)(off/BLOCK_SIZE),		
+					(long unsigned int)(len/BLOCK_SIZE),			
+					(long long unsigned int)off,(long unsigned int)len	
+				);								
+				doLog(pbuf);							
+			}	
 			switch(cmd) {
             
 				case NBD_READ:
 					memcpy(reply.handle, request.handle, sizeof(reply.handle));
-					putBytes(sock,&reply,sizeof(reply));									
-					if(lseek(db,off,SEEK_SET)<0) running = dbError("SEEK");
+					putBytes(&reply,sizeof(reply));									
+					if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
 					while( len > 0 ) {
 						readlen = len > sizeof(buffer)?sizeof(buffer):len;				
 						bytes = read(db,&buffer,readlen);
-						if( bytes != readlen ) running = dbError("READ");
-						else putBytes(sock,&buffer,readlen);
+						if( bytes != readlen ) running = doError("READ");
+						else putBytes(&buffer,readlen);
 						len -= readlen;
 					}
 				break;
@@ -394,15 +438,15 @@ void doSession(int sock)
 			case NBD_WRITE:
 		    
 				memcpy(reply.handle, request.handle, sizeof(reply.handle));
-				if(lseek(db,off,SEEK_SET)<0) running = dbError("SEEK");
+				if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
 				while( len > 0 ) {
 					readlen = len > sizeof(buffer)?sizeof(buffer):len;
-				        getBytes(sock,&buffer,readlen);
+				        getBytes(&buffer,readlen);
 					bytes = write(db,&buffer,readlen);
-					if( bytes != readlen ) running = dbError("WRITE");
+					if( bytes != readlen ) running = doError("WRITE");
 					len -= readlen;
 				}
-				putBytes(sock,&reply,sizeof(reply));
+				putBytes(&reply,sizeof(reply));
 				break;
             
 			case NBD_CLOSE:
@@ -410,51 +454,67 @@ void doSession(int sock)
 				break;
                 
 			default:
-				printf("Unhandled command=%d\n",cmd);
-				doLog("Unknown command",sock);
+				doError("Unknown Command");
 			}	
-		}           
+		} while( running );          
 	}
 	if(db) close(db);
-	doLog("Terminating client session",sock);
+	doLog("Exit SESSION");
 }
 
 //	doAccept - accept loop for new connections
 
-void doAccept(int sock)
+void doAccept(int listener)
 {
+	int net;
 	fd_set rfds;
 	struct sockaddr_storage addrin;
 	socklen_t addrinlen=sizeof(addrin);
-	int net;
 
-	doLog("Running ACCEPT Loop",0);
+	doLog("Enter ACCEPT");
 	while(1) {
 		FD_ZERO(&rfds);
-		FD_SET(sock, &rfds);
-		if(select(sock+1, &rfds, NULL, NULL, NULL)>0) {
-			if(FD_ISSET(sock, &rfds)) {
-				if ((net=accept(sock, (struct sockaddr *) &addrin, &addrinlen)) < 0) {
-					doLog("Accept error on socket",net);
-				} else {
-					db = -1;
-					doSession(net);
-					close(net);
-				}
+		FD_SET(listener, &rfds);
+		if(select(listener+1, &rfds, NULL, NULL, NULL)>0) {
+			if(FD_ISSET(listener, &rfds)) {
+				if ((sock=accept(listener, (struct sockaddr *) &addrin, &addrinlen)) < 0) {
+					doError("Error on ACCEPT");
+					continue;
+				} 
+				db = -1;
+				doSession();
+				close(sock);
 			}
 		}	
 	}
-	doLog("Terminating ACCEPT Loop",0);
+	doLog("Exit ACCEPT");
 }
 
 //	main - just what it says on the can ...
   
-void main(int argc,char *argv[])
+void main(int argc,char **argv)
 {
-	doLog("Running NBD Server",0);
-	int sock = getSocket();
-	doAccept(sock);
-	close(sock);
-	doLog("Terminating NBD Server",0);
+	int listener;
+	int c;
+	
+	while ((c = getopt (argc, argv, "d")) != -1)
+	{
+		switch(c)
+		{
+			case 'd':
+				debug++;
+				break;
+			default:
+				exit(1);
+		}
+	}
+        openlog ("nbd", LOG_CONS|LOG_PID|LOG_NDELAY , LOG_USER);
+	doLog("NBD server v0.1 started");
+	if((listener=getSocket())>0) {
+		doAccept(listener);
+		close(listener);
+	}
+	doLog("NBD server stopped");
+	closelog ();
 	exit(0); 
 }
