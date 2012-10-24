@@ -11,8 +11,12 @@
  *		More compact than original code
  *		For use with Caching / RAID nbd-client
  *
- *	TODO :: Backgrounding
  *     	TODO :: Forking / detaching children
+ *     	TODO :: Record volume name for posterity
+ *     	TODO :: Implement "list" option to present real data
+ *     	TODO :: Integrate Mongo config
+ *     	TODO :: Track pid files
+ *	
  */
 
 //	Headers / Include Files
@@ -32,10 +36,11 @@
 #include <string.h>
 #include <time.h>
 #include <fcntl.h>
+#include <linux/fs.h>
 
 /*
  *	Flags to indicate new-style negotiation
- *	TODO :: This is potentially obsolete
+ *      TODO :: This is potentially obsolete
  *
  */
 
@@ -67,9 +72,13 @@
 
 //	Types of data transaction we will process
 
-#define NBD_READ	0
-#define NBD_WRITE	1
-#define NBD_CLOSE	2
+enum {
+	NBD_READ 	= 0,
+	NBD_WRITE 	= 1,
+	NBD_CLOSE 	= 2,
+	NBD_FLUSH 	= 3,
+	NBD_TRIM 	= 4
+};
 
 //	Network to Host Long (Long)
 
@@ -84,7 +93,6 @@ uint64_t ntohll(uint64_t a) {
 
 //	Our Local Constants
 
-#define BLOCK_SIZE	1024
 #define True 1
 #define False 0
 
@@ -115,7 +123,7 @@ uint32_t 	len;		// length of current transaction
 uint32_t 	cmd;		// command of current transaction
 int 		debug = 0;	// global debug flag
 char		pbuf[1024];	// print buffer
-char* 		cmds[]	= { "READ" , "WRITE" , "CLOSE" };
+char* 		cmds[]	= { "READ" , "WRITE" , "CLOSE" , "FLUSH" , "TRIM" };
 
 void doLog(char *text)
 {
@@ -300,18 +308,18 @@ int doNegotiate()
 	        volatile uint32_t opts  __attribute__((packed));
 	} nbd;
     
-	int working = True;
-	uint32_t flags;
+	uint32_t flags;    
+	uint32_t len;
+	uint32_t opt;
+	
+	char 	*name;	
+	char 	path[256];
+	int 	status = False;
+	int 	working = True;	
+
 	getBytes(&flags,sizeof(flags));
 	flags = htonl(flags);
-	    
-	uint32_t len;
-	char *name;
-	uint32_t opt;
-	   
-	char path[256];
-	int status = False;
-
+	
 	doLog("Enter NEGOTIATION");
 	
 	do {
@@ -376,7 +384,11 @@ int doNegotiate()
 	} while( working );
 	
 	if(!status) return False;
-	int64_t size = htonll(1024*1024*1024);
+	
+	
+	int64_t size = 0;
+	ioctl(db, BLKGETSIZE, &size);
+	size = htonll(size*512);
 	int16_t small = htons(1);
 	char zeros[124];
 	memset(zeros,0,sizeof(zeros));
@@ -411,19 +423,19 @@ void doSession()
 			len = ntohl(request.len);
 			reply.magic = htonl(NBD_REPLY_MAGIC);
 			reply.error = 0;
+			memcpy(reply.handle, request.handle, sizeof(reply.handle));
+			
 			if(debug) {	
 				snprintf(pbuf,sizeof(pbuf),"%s - block [%04llx] %ld blocks, off=%lld, len=%ld",	
 					cmds[cmd],						
-					(long long unsigned int)(off/BLOCK_SIZE),		
-					(long unsigned int)(len/BLOCK_SIZE),			
+					(long long unsigned int)(off/1024),		
+					(long unsigned int)(len/1024),			
 					(long long unsigned int)off,(long unsigned int)len	
 				);								
 				doLog(pbuf);							
 			}	
 			switch(cmd) {
-            
 				case NBD_READ:
-					memcpy(reply.handle, request.handle, sizeof(reply.handle));
 					putBytes(&reply,sizeof(reply));									
 					if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
 					while( len > 0 ) {
@@ -436,8 +448,6 @@ void doSession()
 				break;
                 
 			case NBD_WRITE:
-		    
-				memcpy(reply.handle, request.handle, sizeof(reply.handle));
 				if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
 				while( len > 0 ) {
 					readlen = len > sizeof(buffer)?sizeof(buffer):len;
@@ -451,6 +461,16 @@ void doSession()
             
 			case NBD_CLOSE:
 				running = False;
+				break;
+			
+			case NBD_TRIM:
+				// FIXME :: TRIM Code needed
+				putBytes(&reply,sizeof(reply));
+				break;
+				
+			case NBD_FLUSH:
+				// FIXME :: FLUSH Code needed
+				putBytes(&reply,sizeof(reply));
 				break;
                 
 			default:
@@ -466,7 +486,7 @@ void doSession()
 
 void doAccept(int listener)
 {
-	int net;
+	int net,f;
 	fd_set rfds;
 	struct sockaddr_storage addrin;
 	socklen_t addrinlen=sizeof(addrin);
@@ -480,9 +500,24 @@ void doAccept(int listener)
 				if ((sock=accept(listener, (struct sockaddr *) &addrin, &addrinlen)) < 0) {
 					doError("Error on ACCEPT");
 					continue;
-				} 
+				}
 				db = -1;
-				doSession();
+				if(!debug) {
+					f = fork();
+					if(f<0) { printf("Fork error [err=%d]\n",errno); exit(1); }
+					if(f==0) {
+						syslog(LOG_INFO,"Forkd new process with id = %d",getpid());
+						setsid();
+						for (f=getdtablesize();f>=0;--f) if(f!=sock) close(f);
+						f=open("/dev/null",O_RDWR); dup(f); dup(f); umask(027); chdir("/tmp/");
+						doSession();
+						close(sock);
+						syslog(LOG_INFO,"Process with pid %d terminated",getpid());
+						exit(0);
+					}
+				} else {
+					doSession();
+				}
 				close(sock);
 			}
 		}	
@@ -490,12 +525,69 @@ void doAccept(int listener)
 	doLog("Exit ACCEPT");
 }
 
+//	doCreatePid - process id file management
+
+
+#define PIDFILE "/var/run/nbd-server.pid"
+
+#define BUF_SIZE 100            /* Large enough to hold maximum PID as string */
+
+int doCreatePid()
+{
+	int fd, pid, flags = 0;
+	char buf[BUF_SIZE];
+	
+createpid:
+
+	fd = open(PIDFILE, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+	if (fd == -1) {
+		doLog("Failed to open PIDFILE");
+		return -1;
+	}
+        flags = fcntl(fd, F_GETFD);
+        if (flags == -1) {
+		doLog("Failed to get PIDFILE flags");
+		return -1;
+	}
+        flags |= FD_CLOEXEC;       
+        if (fcntl(fd, F_SETFD, flags) == -1) {
+		doLog("Failed to set CLOEXEC on pidfile");
+		return -1;
+	}
+	if (lockf(fd, F_TLOCK , 0) == -1) {
+		if (errno  == EAGAIN || errno == EACCES) {
+			read(fd,&buf,sizeof(buf));
+			close(fd);
+			pid = atoi(buf);
+			syslog(LOG_ERR,"Attempting to kill pid=%d",pid);
+			if(pid>1) kill(pid,SIGTERM);
+			sleep(1);
+			goto createpid;
+		}
+	        else {
+			doLog("Failed to LOCK PID file");
+			return -1;
+		}
+	}
+	if (ftruncate(fd, 0) == -1) {
+		doLog("Failed to truncate PIDFILE");
+		return -1;
+	}
+	snprintf(buf, BUF_SIZE, "%ld\n", (long) getpid());
+	if (write(fd, buf, strlen(buf)) != strlen(buf)) {
+		doLog("Failed to write to PIDFILE");
+		return -1;
+	}
+	return fd;
+}
+	
 //	main - just what it says on the can ...
   
 void main(int argc,char **argv)
 {
 	int listener;
 	int c;
+	int f;
 	
 	while ((c = getopt (argc, argv, "d")) != -1)
 	{
@@ -508,8 +600,20 @@ void main(int argc,char **argv)
 				exit(1);
 		}
 	}
+	if(!debug) {
+		f = fork();
+		if(f<0) { printf("Fork error [err=%d]\n",errno); exit(1); }
+		if(f>0) exit(0); // Parent
+		setsid(); for (f=getdtablesize();f>=0;--f) close(f);
+		f=open("/dev/null",O_RDWR); dup(f); dup(f); umask(027); chdir("/tmp/");
+		signal( SIGCHLD, SIG_IGN ); 
+	}
         openlog ("nbd", LOG_CONS|LOG_PID|LOG_NDELAY , LOG_USER);
 	doLog("NBD server v0.1 started");
+	if(doCreatePid()<0) {
+		doLog("-- ABORT");
+		exit(1);
+	}
 	if((listener=getSocket())>0) {
 		doAccept(listener);
 		close(listener);
