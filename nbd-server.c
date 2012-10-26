@@ -11,11 +11,9 @@
  *		More compact than original code
  *		For use with Caching / RAID nbd-client
  *
- *     	TODO :: Forking / detaching children
  *     	TODO :: Record volume name for posterity
  *     	TODO :: Implement "list" option to present real data
  *     	TODO :: Integrate Mongo config
- *     	TODO :: Track pid files
  *	
  */
 
@@ -35,82 +33,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <fcntl.h>
 #include <linux/fs.h>
+#include <fcntl.h>
+#include "nbd.h"
 
 /*
  *	Flags to indicate new-style negotiation
  *      TODO :: This is potentially obsolete
+ *      TODO :: remove device listing support
  *
  */
-
-#define NBD_FLAG_FIXED_NEWSTYLE (1 << 0)
-
-//	Constants used for Client-Server negotiation
-
-#define INIT_PASSWD 	    "NBDMAGIC"
-#define OPTS_MAGIC          0x49484156454F5054LL
-#define NBD_REQUEST_MAGIC   0x25609513
-#define NBD_REPLY_MAGIC     0x67446698
-
-//	Commands we will accept from the client
-
-#define NBD_OPT_EXPORT_NAME 1
-#define NBD_OPT_ABORT       2
-#define NBD_OPT_LIST        3
-
-//	Replies we might send back to the client
-
-#define NBD_CMD_MASK_COMMAND    0x0000ffff
-#define NBD_REP_ACK		(1) 	                    /** ACK a request. Data: option number to be acked */
-#define NBD_REP_SERVER	        (2)	                    /** Reply to NBD_OPT_LIST (one of these per server; must be followed by NBD_REP_ACK to signal the end of the list */
-#define NBD_REP_FLAG_ERROR	(1 << 31)	            /** If the high bit is set, the reply is an error */
-#define NBD_REP_ERR_UNSUP	(1 | NBD_REP_FLAG_ERROR)    /** Client requested an option not understood by this version of the server */
-#define NBD_REP_ERR_POLICY	(2 | NBD_REP_FLAG_ERROR)    /** Client requested an option not allowed by server configuration. (e.g., the option was disabled) */
-#define NBD_REP_ERR_INVALID	(3 | NBD_REP_FLAG_ERROR)    /** Client issued an invalid request */
-#define NBD_REP_ERR_PLATFORM	(4 | NBD_REP_FLAG_ERROR)	
-
-//	Types of data transaction we will process
-
-enum {
-	NBD_READ 	= 0,
-	NBD_WRITE 	= 1,
-	NBD_CLOSE 	= 2,
-	NBD_FLUSH 	= 3,
-	NBD_TRIM 	= 4
-};
-
-//	Network to Host Long (Long)
-
-uint64_t ntohll(uint64_t a) {
-        uint32_t lo = a & 0xffffffff;
-        uint32_t hi = a >> 32U;
-        lo = ntohl(lo);
-        hi = ntohl(hi);
-        return ((uint64_t) lo) << 32U | hi;
-}
-#define htonll ntohll
-
-//	Our Local Constants
-
-#define True 1
-#define False 0
-
-//	Local Structures we use during communication
-
-struct nbd_request {
-        uint32_t    magic;
-        uint32_t    type;
-        char        handle[8];
-        uint64_t    from;
-        uint32_t    len;
-} __attribute__ ((packed));
-
-struct nbd_reply {
-        uint32_t magic;
-        uint32_t error;           /* 0 = ok, else error   */
-        char handle[8];         /* handle you got from request  */
-} __attribute__ ((packed));
 
 //	Global Variables
 //	As we will eventually fork one of these per connection, it's just easier
@@ -460,6 +392,7 @@ void doSession()
 				break;
             
 			case NBD_CLOSE:
+				//putBytes(&reply,sizeof(reply));
 				running = False;
 				break;
 			
