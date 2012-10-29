@@ -1,4 +1,7 @@
-all:	nbd-server nbd-client
+all:	nbd nbd-server
+
+nbd: nbd.c nbd.h
+	@gcc -O2 -D_GNU_SOURCE nbd.c -g -o nbd
 
 nbd-server: nbd-server.c nbd.h
 	@gcc -O2 -D_GNU_SOURCE nbd-server.c -g -o nbd-server

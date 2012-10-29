@@ -14,6 +14,8 @@
  *     	TODO :: Record volume name for posterity
  *     	TODO :: Implement "list" option to present real data
  *     	TODO :: Integrate Mongo config
+ *     	TODO :: Localise socket for multiple connections
+ *     	TODO :: Re-Add O_DIRECT but use posix_memalign to allocate buffer space
  *	
  */
 
@@ -37,6 +39,9 @@
 #include <fcntl.h>
 #include "nbd.h"
 
+#define PIDFILE "/var/run/nbd-server.pid"
+#define BUF_SIZE 100            		
+
 /*
  *	Flags to indicate new-style negotiation
  *      TODO :: This is potentially obsolete
@@ -48,8 +53,6 @@
 //	As we will eventually fork one of these per connection, it's just easier
 //	to use global variables than passing file descriptora around.
 
-int 		sock;		// current client connection
-int 		db;		// current database connection
 uint64_t 	off;		// offset of current transation
 uint32_t 	len;		// length of current transaction
 uint32_t 	cmd;		// command of current transaction
@@ -73,8 +76,8 @@ int doError(char *text)
 {
 	char msg[256];
 	snprintf(msg,sizeof(msg),
-		 "error:%s socket=%d db=%d off=%lld len=%lld errno=%d",
-		 text,sock,db,(unsigned long long)off,(unsigned long long)len,errno);
+		 "error:%s off=%lld len=%lld errno=%d",
+		 text,(unsigned long long)off,(unsigned long long)len,errno);
 	if(debug<2)
 		syslog(LOG_ERR,"%s",msg);
 	else	doLog(msg);	
@@ -85,8 +88,8 @@ int doError(char *text)
 
 int getSocket()
 {
-	char    *address        = "0.0.0.0";
-	char    *port           = "10809";
+	char    *address        = NBD_SERVER_ADDR;
+	char    *port           = NBD_SERVER_PORT;
 	struct  addrinfo *ai    = NULL;
 	struct  addrinfo hints;
 	int 	s;
@@ -139,7 +142,7 @@ int getSocket()
 
 //	getBytes - get data from the client (via Network)
 
-void getBytes(void *buf, size_t len)
+void getBytes(int sock,void *buf, size_t len)
 {
 	int bytes;
 	int max = len;
@@ -174,7 +177,7 @@ void getBytes(void *buf, size_t len)
 
 //	putBytes - Send information to the client (via Network)
 
-void putBytes(void *buf, size_t len)
+void putBytes(int sock,void *buf, size_t len)
 {
 	char msg[1024];
 	
@@ -199,7 +202,7 @@ void putBytes(void *buf, size_t len)
 
 //	doConnectionMade - hangle a new incoming connection
 
-void doConnectionMade()
+void doConnectionMade(int sock)
 {
 	struct {
 		volatile uint64_t passwd __attribute__((packed));
@@ -212,28 +215,28 @@ void doConnectionMade()
 	nbd.flags  = htons(NBD_FLAG_FIXED_NEWSTYLE);
     
 	doLog("Connection Made");
-	putBytes(&nbd,sizeof(nbd));
+	putBytes(sock,&nbd,sizeof(nbd));
 }
 
 //	sendReply - send a reply with a pre-determined format to the client
 
-static void sendReply(uint32_t opt,uint32_t reply_type, size_t datasize, void* data)
+static void sendReply(int sock,uint32_t opt,uint32_t reply_type, size_t datasize, void* data)
 {
 	uint64_t magic = htonll(0x3e889045565a9LL);
 	reply_type = htonl(reply_type);
 	uint32_t datsize = htonl(datasize);       
         
 	doLog("sendReply");
-	putBytes(&magic,sizeof(magic));
-	putBytes(&opt,sizeof(opt));
-	putBytes(&reply_type,sizeof(reply_type));
-	putBytes(&datsize,sizeof(datsize));
-	if(datasize) putBytes(data,datasize);
+	putBytes(sock,&magic,sizeof(magic));
+	putBytes(sock,&opt,sizeof(opt));
+	putBytes(sock,&reply_type,sizeof(reply_type));
+	putBytes(sock,&datsize,sizeof(datsize));
+	if(datasize) putBytes(sock,data,datasize);
 }
 
 //	doNegotiate - negotiate a new connection with the client
 
-int doNegotiate()
+int doNegotiate(int sock)
 {
 	struct {
 	        volatile uint64_t magic __attribute__((packed));
@@ -247,15 +250,16 @@ int doNegotiate()
 	char 	*name;	
 	char 	path[256];
 	int 	status = False;
-	int 	working = True;	
+	int 	working = True;
+	int	db;
 
-	getBytes(&flags,sizeof(flags));
+	getBytes(sock,&flags,sizeof(flags));
 	flags = htonl(flags);
 	
 	doLog("Enter NEGOTIATION");
 	
 	do {
-		getBytes(&nbd,sizeof(nbd));
+		getBytes(sock,&nbd,sizeof(nbd));
 		if(nbd.magic != htonll(OPTS_MAGIC)) {
 			doError("Bad MAGIC from Client");
 			status = False;
@@ -266,27 +270,33 @@ int doNegotiate()
 		switch( opt )
 		{
 			case NBD_OPT_EXPORT_NAME:                
-				getBytes(&len,sizeof(len));
+				getBytes(sock,&len,sizeof(len));
 				len = ntohl(len);
 				name = malloc(len+1);
 				name[len]=0;
-				getBytes(name,len);
+				getBytes(sock,name,len);
+				syslog(LOG_INFO,"Incoming name = %s",name);
 		
 				sprintf(path,"/dev/vols/blocks/%s",name);
-				db = open(path,O_RDWR,O_DIRECT);
-				if( db < 0) {
-					doError("Unable to open BLOCK DEVICE");
-					doError(path);
-					status = False;
-					working = False;
-					break;
+				db = open(path,O_RDWR|O_EXCL);
+				if( db == -1) {
+					sprintf(path,"/dev/vols/blocks/%s1",name);
+					db = open(path,O_RDWR|O_EXCL);
+					if( db ==-1) {
+						doError("Unable to open BLOCK DEVICE");
+						doError(path);
+						status = False;
+						working = False;
+						break;
+					}
 				}
+				if(db != -1) { syslog(LOG_INFO,"Opened [%s] with descriptor [%d]",path,db); }
 				working = False;
 				status = True;
 				free(name);
 				break;
 	
-			case NBD_OPT_LIST:
+			/*case NBD_OPT_LIST:
 				doLog("Received LIST from client");
 				getBytes(&len,sizeof(len));
 				len=ntohl(len);
@@ -301,7 +311,7 @@ int doNegotiate()
 				memcpy(ptr,"demo",4);
 				sendReply(opt, NBD_REP_SERVER, 8, buf);
 				sendReply(opt, NBD_REP_ACK, 0, NULL);
-				break;
+				break; */
 	
 			case NBD_OPT_ABORT:
 				doLog("Received ABORT from client");
@@ -324,32 +334,33 @@ int doNegotiate()
 	int16_t small = htons(1);
 	char zeros[124];
 	memset(zeros,0,sizeof(zeros));
-	putBytes(&size,sizeof(size));
-	putBytes(&small,sizeof(small));
-	putBytes(&zeros,sizeof(zeros));
+	putBytes(sock,&size,sizeof(size));
+	putBytes(sock,&small,sizeof(small));
+	putBytes(sock,&zeros,sizeof(zeros));
 	doLog("Exit NEGOTIATION [Ok]");
-	return True;
+	return db;
 }
 
 //	doSession - process a single client session
 
-void doSession()
+void doSession(int sock)
 {
 	struct nbd_request request;
 	struct nbd_reply reply;
 	char buffer[1024*132];
 	int readlen,bytes;
 	int running = True;
+	int db;
 
 	doLog("Enter SESSION");
-	doConnectionMade();
-	if(doNegotiate()) {
+	doConnectionMade(sock);
+	if(db=doNegotiate(sock)) {
 	
 		doLog("Processing DATA requests ...");
         		        
 		do {
             
-			getBytes(&request,sizeof(request));
+			getBytes(sock,&request,sizeof(request));
 			off = ntohll(request.from);
 			cmd = ntohl(request.type) & NBD_CMD_MASK_COMMAND;
 			len = ntohl(request.len);
@@ -368,42 +379,42 @@ void doSession()
 			}	
 			switch(cmd) {
 				case NBD_READ:
-					putBytes(&reply,sizeof(reply));									
-					if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
+					putBytes(sock,&reply,sizeof(reply));									
+					if(lseek(db,off,SEEK_SET)==-1) running = doError("SEEK");
 					while( len > 0 ) {
-						readlen = len > sizeof(buffer)?sizeof(buffer):len;				
+						readlen = len > sizeof(buffer)?sizeof(buffer):len;
+						syslog(LOG_ERR,"READ: %d, %lld %ld",db,(unsigned long long)off,(unsigned long) len);
 						bytes = read(db,&buffer,readlen);
 						if( bytes != readlen ) running = doError("READ");
-						else putBytes(&buffer,readlen);
+						else putBytes(sock,&buffer,readlen);
 						len -= readlen;
 					}
 				break;
                 
 			case NBD_WRITE:
-				if(lseek(db,off,SEEK_SET)<0) running = doError("SEEK");
+				if(lseek(db,off,SEEK_SET)==-1) running = doError("SEEK");
 				while( len > 0 ) {
 					readlen = len > sizeof(buffer)?sizeof(buffer):len;
-				        getBytes(&buffer,readlen);
+				        getBytes(sock,&buffer,readlen);
 					bytes = write(db,&buffer,readlen);
 					if( bytes != readlen ) running = doError("WRITE");
 					len -= readlen;
 				}
-				putBytes(&reply,sizeof(reply));
+				putBytes(sock,&reply,sizeof(reply));
 				break;
             
 			case NBD_CLOSE:
-				//putBytes(&reply,sizeof(reply));
 				running = False;
 				break;
 			
 			case NBD_TRIM:
 				// FIXME :: TRIM Code needed
-				putBytes(&reply,sizeof(reply));
+				putBytes(sock,&reply,sizeof(reply));
 				break;
 				
 			case NBD_FLUSH:
 				// FIXME :: FLUSH Code needed
-				putBytes(&reply,sizeof(reply));
+				putBytes(sock,&reply,sizeof(reply));
 				break;
                 
 			default:
@@ -419,7 +430,7 @@ void doSession()
 
 void doAccept(int listener)
 {
-	int net,f;
+	int net,f,sock;
 	fd_set rfds;
 	struct sockaddr_storage addrin;
 	socklen_t addrinlen=sizeof(addrin);
@@ -434,7 +445,6 @@ void doAccept(int listener)
 					doError("Error on ACCEPT");
 					continue;
 				}
-				db = -1;
 				if(!debug) {
 					f = fork();
 					if(f<0) { printf("Fork error [err=%d]\n",errno); exit(1); }
@@ -443,13 +453,13 @@ void doAccept(int listener)
 						setsid();
 						for (f=getdtablesize();f>=0;--f) if(f!=sock) close(f);
 						f=open("/dev/null",O_RDWR); dup(f); dup(f); umask(027); chdir("/tmp/");
-						doSession();
+						doSession(sock);
 						close(sock);
 						syslog(LOG_INFO,"Process with pid %d terminated",getpid());
 						exit(0);
 					}
 				} else {
-					doSession();
+					doSession(sock);
 				}
 				close(sock);
 			}
@@ -459,11 +469,6 @@ void doAccept(int listener)
 }
 
 //	doCreatePid - process id file management
-
-
-#define PIDFILE "/var/run/nbd-server.pid"
-
-#define BUF_SIZE 100            /* Large enough to hold maximum PID as string */
 
 int doCreatePid()
 {

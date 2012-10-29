@@ -2,9 +2,16 @@
  *      nbd-client.c
  *      (c) Gareth Bult 2012
  *
- *      A slightly more robust client that can be rolled into other apps.
- *      (with a working retry / reconnect model ..)
- *	
+ *	Specifically this client supports two connections at the same time with
+ *	a view to providing links for network RAID10. It also provides scope for
+ *	more than two links, and local caching / RAID rebuilds etc ...
+ *
+ *	TODO :: dynamically allocate NBD devices (on 'next free' basis)
+ *	TODO :: open both devices and sit in a r/w loop (RAID10)
+ *	TODO :: incorporate server to re-serve information
+ *	TODO :: incorporate caching mechanism
+ *	TODO :: incorporate RAID / recovory options
+ *	TODO :: insert driver code / merge with server
  */
 
 //	Headers / Include Files
@@ -22,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <time.h>
 #include <linux/fs.h>
 #include <fcntl.h>
@@ -32,15 +40,32 @@ int debug;
 extern char *optarg;
 int running = True;
 
-struct process_list {
-    int nbd;
-    int pid;
-};
+//typedef struct process {
+//    int nbd;
+//    int pid;
+//    int dev;
+//} process;
 
-struct process_list procs[8];
+process procs[8];
 int pcount=0;
 
-int doConnect(char* host,char* port)
+int getNextFreeDev()
+{
+    char path[256];
+    int index = 0;
+
+    while( index < 256 )
+    {
+	sprintf(path,"/sys/devices/virtual/block/nbd%d/pid",index);
+	if( access( path, F_OK) == -1 ) {
+	    return index;
+	}
+	index++;
+    }
+    return -1;
+}
+
+int doConnect(char* host)
 {   
     struct addrinfo hints;
     struct addrinfo *ai = NULL;
@@ -55,7 +80,7 @@ int doConnect(char* host,char* port)
     hints.ai_flags      = AI_ADDRCONFIG | AI_NUMERICSERV;
     hints.ai_protocol   = IPPROTO_TCP;
     
-    if( getaddrinfo(host, port, &hints, &ai) < 0) {
+    if( getaddrinfo(host, NBD_PORT, &hints, &ai) < 0) {
         printf("Unable to resolve hostname, errno=%d\n",errno);
         exit(1);
     }
@@ -180,7 +205,7 @@ void negotiate(int sock, uint64_t *rsize64, uint32_t *flags, char* name, uint32_
 	*rsize64 = size64;
 }
 
-int doSetup(char* host,char* port,char* name,int nbd)
+int doSetup(char* host,char* name,int nbd)
 {
     uint64_t size64;
     uint32_t flags;
@@ -190,7 +215,7 @@ int doSetup(char* host,char* port,char* name,int nbd)
     int blocksize=1024;
     int s;
     //
-    s = doConnect(host, port);
+    s = doConnect(host);
     negotiate(s, &size64, &flags, name, needed_flags, cflags, opts);
     setsizes(nbd, size64, blocksize, flags);    
     return s;
@@ -206,20 +231,24 @@ void termination_handler (int signum)
     running = False;
 }
 
-void doServe(char* spec,char* name)
+process * doServe(char* spec,char* name)
 {
     if(!spec) return;
     
     char* host = strtok(spec,":");
-    char* port = strtok(NULL,":");
-    int   nbdx = atoi(strtok(NULL,":"));
     char  nbdpath[64];
     int sock, nbd, f, status;
     struct sigaction new_action;
     
-    printf("Serving host (%s) port (%s) device /dev/nbd%d\n",host,port,nbdx);
+    int dev = getNextFreeDev();
+    if(dev == -1) {
+	printf("Ran out of NBD devices\n");
+	return;
+    }
+    
+    printf("Serving host (%s) device /dev/nbd%d\n",host,dev);
 
-    snprintf(nbdpath,sizeof(nbdpath),"/dev/nbd%d",nbdx);
+    snprintf(nbdpath,sizeof(nbdpath),"/dev/nbd%d",dev);
     nbd = open(nbdpath, O_RDWR);
     if (nbd < 0) {
         printf("Cannot open NBD\nPlease ensure the 'nbd' module is loaded.\n");
@@ -232,8 +261,9 @@ void doServe(char* spec,char* name)
     if(f>0) {
 	procs[pcount].pid = f;
 	procs[pcount].nbd = nbd;
+	procs[pcount].dev = dev;
 	pcount++;
-	return;
+	return (process*)&(procs[pcount-1]);
     }
     //
     setsid();   
@@ -246,9 +276,9 @@ void doServe(char* spec,char* name)
     atexit(bye);
     
     do {
-        sock = doSetup(host,port,name,nbd);
+        sock = doSetup(host,name,nbd);
         if(sock<0) {
-            syslog(LOG_ALERT,"Unable to connect to host [%s:%s] - retry in 10s (%d:%d)",host,port,sock,errno);
+            syslog(LOG_ALERT,"Unable to connect to host [%s] - retry in 10s (%d:%d)",host,sock,errno);
 	    sleep(30);
 	    continue;
         }
@@ -291,6 +321,8 @@ void main(int argc,char** argv)
     char* name =NULL;
     int status;
     struct sigaction new_action;
+    process *p1;
+    process *p2;
 	
     while ((c = getopt (argc, argv, "da:b:n:")) != -1)
     {
@@ -314,8 +346,8 @@ void main(int argc,char** argv)
 	}
     }
     openlog ("nbd-client", LOG_CONS|LOG_PID|LOG_NDELAY , LOG_USER);
-    doServe(host1,name);
-    doServe(host2,name);
+    p1 = doServe(host1,name); sleep(1);
+    p2 = doServe(host2,name);
         
     new_action.sa_handler = termination_handler;
     sigemptyset (&new_action.sa_mask);
@@ -323,6 +355,18 @@ void main(int argc,char** argv)
     sigaction (SIGINT, &new_action, NULL);   
     atexit(doKill);
     
-    printf("Main Loop\n");
-    wait(&status);
+    char path1[64];
+    char path2[64];
+    
+    sprintf(path1,"/dev/nbd%d",p1->dev);
+    sprintf(path2,"/dev/nbd%d",p2->dev);
+    
+    int fd1 = open(path1,O_RDWR,O_DIRECT);
+    int fd2 = open(path2,O_RDWR,O_DIRECT);
+
+    printf("Main Loop [%s] [%s]\n",path1,path2);
+    do
+    {
+	sleep(1);	
+    } while (True);
 }
