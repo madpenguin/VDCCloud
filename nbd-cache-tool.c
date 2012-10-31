@@ -37,7 +37,7 @@ void main(int argc,char **argv)
     	{
 	    case 'c':
 			cacheClear();
-			exit(0);			
+			break;
 		case 'w':
 			cacheLoad();
 			cacheWrite(atoi(optarg));	
