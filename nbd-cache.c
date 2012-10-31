@@ -3,7 +3,6 @@
  *      (c) Gareth Bult 2012
  *
  *	TODO :: Add "sync" to mark block as written to net
- *	TODO :: split tree for "used" and "dirty"
  *	TODO :: Actually read/write data blocks
  *	TODO :: Plan for incremental recovert
  *	TODO :: Format option [clear], need to write zeros into cache
@@ -42,7 +41,6 @@ uint32_t*	freeq;			// freeq for free blocks
 uint32_t*	freeq_next;		// next free block
 
 int 		cache;			// cache file handle
-DB*			db;				// BDB in-memory database
 DB*			hash_used;		// hash table for used blocks
 DB*			hash_dirty;		// hash table for dirty blocks
 DBT 		key,val;		//
@@ -58,9 +56,25 @@ DBT 		key,val;		//
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-char* cacheOpen(char* dev)
+int cacheInitDB(DB** db)
 {
 	int ret;
+	DB* d;
+	
+	if( db_create(db,NULL,0) != 0) {
+		syslog(LOG_ALERT,"Unable to create DB handle");
+		return False;
+	}
+	d=*db;
+	if( ret = d->open(d, NULL, NULL, NULL, DB_HASH, DB_CREATE, 0777) != 0) {
+		syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);
+		return False;
+	}
+	return True;
+}
+
+int cacheOpen(char* dev)
+{
 	key.flags = 0;	// make sure flags are null'd
 	val.flags = 0;
 	//	
@@ -76,17 +90,13 @@ char* cacheOpen(char* dev)
 	syslog(LOG_INFO,"Cache Open (%s) %lldM\n",dev,(unsigned long long)cache_blocks*512/1024/1024);
 	cache_entries = cache_blocks*512 / (1024+2*sizeof(index_entry));
 	//
-	if( db_create(&db,NULL,0) != 0) {
-		close(cache);
-		syslog(LOG_ALERT,"Unable to create DB handle");
-		return False;
-	}	
-	if( ret = db->open(db, NULL, NULL, NULL, DB_HASH, DB_CREATE, 0777) != 0) {
-		syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);
-		return False;
+	if( cacheInitDB(&hash_used) && cacheInitDB(&hash_dirty) ){
+		freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
+		freeq_next = freeq;
+		return True;		
 	}
-	freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
-	freeq_next = freeq;
+	close(cache);
+	return False;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -95,30 +105,42 @@ char* cacheOpen(char* dev)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheSave()
+int cacheSaveHash(index_entry* base,DB* db)
 {
-	int bytes,ret,slot;
-	int meta_size = cache_entries*sizeof(index_entry);
-	index_entry* ptr;
-	index_entry* index_base = (index_entry*)malloc(meta_size);
+	int ret;
+	int count=0;
 	hash_entry* entry;
+	index_entry* ptr;
 	DBC *cursor;
-	int count = 0;
 	
-	memset(index_base,0,meta_size);	
 	if( db->cursor(db,NULL,&cursor,0) != 0) {
 		syslog(LOG_ALERT,"Unable to create cursor in cacheSave");
-		return False;
+		return -1;
 	}
 	ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
 	while( ret == 0 ) {
 		entry		= (hash_entry*)(val.data);
-		ptr			= index_base + entry->slot;		
+		ptr			= base + entry->slot;		
 		ptr->dirty 	= entry->dirty;
 		ptr->block 	= entry->block;
 		ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
 		count++;
 	}
+	cursor->c_close(cursor);
+	return count;
+}
+
+int cacheSave()
+{
+	int bytes,ret,slot;
+	int meta_size = cache_entries*sizeof(index_entry);
+	index_entry* index_base = (index_entry*)malloc(meta_size);
+
+	memset(index_base,0,meta_size);
+	
+	int used = cacheSaveHash(index_base,hash_used);
+	int dirty = cacheSaveHash(index_base,hash_dirty);
+	
 	if(lseek(cache,0,SEEK_SET)==-1) {
 		syslog(LOG_ALERT,"Unable to seek to the beginning of the cache");
 		return False;
@@ -128,8 +150,9 @@ int cacheSave()
 		syslog(LOG_ALERT,"Failed to write to cache");
 		return False;
 	} 
-	syslog(LOG_INFO,"Cache saved %d entries, data=%dM, meta=%dM",count,
-		   (int)(cache_blocks*512/1024/1024),bytes/1024/1024);		
+	syslog(LOG_INFO,"Cache save :: %d used, %d dirty, data=%dM, meta=%dM",
+		   used,dirty,(int)(cache_blocks*512/1024/1024),bytes/1024/1024);
+	
 	return True;
 }
 
@@ -145,7 +168,8 @@ void cacheClose(char* dev)
 {
 	cacheSave();
 	free(freeq);
-	db->close(db,0);
+	hash_used->close(hash_used,0);
+	hash_dirty->close(hash_dirty,0);
 	syslog(LOG_INFO,"Cache (%s) closed",dev);
 }
 
@@ -153,7 +177,6 @@ void cacheClose(char* dev)
 //
 //	cacheRead	- read an entry from the cache
 //
-//	TODO :: try both used and dirty trees
 // 	TODO :: get actual data rather than header entries
 //
 ///////////////////////////////////////////////////////////////////////////////
@@ -165,8 +188,15 @@ hash_entry* cacheRead(uint64_t block)
 	key.data = &block;
 	key.size = sizeof(block);
 	
-	ret = db->get(db,NULL,&key,&val,0);
-	if( ret == DB_NOTFOUND ) return NULL;
+	ret = hash_used->get(hash_used,NULL,&key,&val,0);
+	if( ret == DB_NOTFOUND ) {
+		ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0);
+		if( ret == DB_NOTFOUND ) return NULL;
+	}
+	if(ret !=0) {
+		syslog(LOG_ALERT,"Read Error on memory DB");
+		return NULL;
+	}
 	return (hash_entry*)(val.data);
 }
 
@@ -197,15 +227,15 @@ int cacheClear()
 //
 //	cacheLoad	- load the cache in from backing store
 //
-//	TODO :: split between used / dirty!
-//  TODO :: update INFO to include used / dirty!
-//
 ///////////////////////////////////////////////////////////////////////////////
 
 int cacheLoad()
 {
 	int bytes,ret,slot;
 	int meta_size = cache_entries*sizeof(index_entry);
+	int used=0;
+	int dirty=0;
+	DB* db;
 
 	if(lseek(cache,0,SEEK_SET)==-1) {
 		syslog(LOG_ALERT,"Unable to seek BOF in cacheLoad");
@@ -219,35 +249,44 @@ int cacheLoad()
 		return False;
 	}
 	for(slot=0;slot<cache_entries;slot++) {
-		if(ptr->dirty) {
-			hash_entry* entry = (hash_entry*)malloc(sizeof(hash_entry));
-			entry->slot 	= slot;
-			entry->block 	= ptr->block;
-			entry->dirty 	= ptr->dirty;
-			
-			val.data = entry;
-			val.size = sizeof(hash_entry);
-			key.data = &entry->block;
-			key.size = sizeof(entry->block);
-			
-			if(ret = db->put(db,NULL,&key,&val,0) !=0) {
-				syslog(LOG_ALERT,"Unable to insert entry into HASH");
-				return False;
-			}
-		} else {
+		if(!ptr->dirty) {
 			*freeq_next++ = slot;
+			ptr++;
+			continue;
+		}
+		switch(ptr->dirty) {
+			case USED:
+				db = hash_used;
+				used++;
+				break;
+			default:
+				db = hash_dirty;
+				dirty++;
+				break;
+		}
+		hash_entry* entry = (hash_entry*)malloc(sizeof(hash_entry));
+		entry->slot 	= slot;
+		entry->block 	= ptr->block;
+		entry->dirty 	= ptr->dirty;
+			
+		val.data = entry;
+		val.size = sizeof(hash_entry);
+		key.data = &entry->block;
+		key.size = sizeof(entry->block);
+			
+		if(ret = db->put(db,NULL,&key,&val,0) !=0) {
+			syslog(LOG_ALERT,"Unable to insert entry into HASH");
+			return False;
 		}
 		ptr++;
 	}
-	syslog(LOG_INFO,"Cache loaded, free list size = %ld",freeq_next-freeq);
+	syslog(LOG_INFO,"Loaded %d used, %d dirty, free list size = %ld",used,dirty,freeq_next-freeq);
 	free(index_base);	
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 //
 //	cacheWrite	- write a new entry into the local cache
-//
-//	TODO :: use dirty tree for writes
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -265,7 +304,7 @@ int cacheWrite(uint64_t block)
 	key.data = &entry->block;
 	key.size = sizeof(entry->block);
 		
-	if(ret = db->put(db,NULL,&key,&val,0) !=0) {
+	if(ret = hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
 		syslog(LOG_ALERT,"Unable to insert entry into HASH");
 		return False;
 	}
@@ -276,21 +315,20 @@ int cacheWrite(uint64_t block)
 //
 //	cacheList	- list the contents of the cache
 //
-//	TODO :: re-arrange for used/dirty
-//
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheList()
+int cacheListHash(DB *db,char *title)
 {
 	int bytes,ret,slot;
 	hash_entry* entry;
 	DBC *cursor;	
-	
+
 	if( db->cursor(db,NULL,&cursor,0) != 0) {
 		syslog(LOG_ALERT,"Unable to allocatoe Cursor!");
 		return False;
 	}
 	ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
+	printf("%s entries ...\n",title);
 	while( ret == 0 ) {
 		entry = (hash_entry*)(val.data);
 		printf("%08lld - %08lld :: %d\n",
@@ -299,5 +337,12 @@ int cacheList()
 			   entry->dirty);
 		ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
 	}
+	cursor->c_close(cursor);
+	printf("\n");
 	return True;
+}
+
+int cacheList()
+{
+	return cacheListHash(hash_used,"Used") && cacheListHash(hash_dirty,"Dirty");	
 }
