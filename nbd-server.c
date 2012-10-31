@@ -4,6 +4,7 @@
  *
  *	This is a cut-down version of the nbd-server specifically targetted at the VDC Cloud project
  *	written from scratch with the following in mind;
+ *	
  *		No redundant features
  *		Required volume name obtained dynamically from the client [authentication to come]
  *		Designed to run on ZFS volumes specifically
@@ -238,7 +239,7 @@ static void sendReply(int sock,uint32_t opt,uint32_t reply_type, size_t datasize
 
 int doNegotiate(int sock)
 {
-	struct {
+    struct {
 	        volatile uint64_t magic __attribute__((packed));
 	        volatile uint32_t opts  __attribute__((packed));
 	} nbd;
@@ -445,21 +446,17 @@ void doAccept(int listener)
 					doError("Error on ACCEPT");
 					continue;
 				}
-				if(!debug) {
-					f = fork();
-					if(f<0) { printf("Fork error [err=%d]\n",errno); exit(1); }
-					if(f==0) {
-						syslog(LOG_INFO,"Forkd new process with id = %d",getpid());
-						setsid();
-						for (f=getdtablesize();f>=0;--f) if(f!=sock) close(f);
-						f=open("/dev/null",O_RDWR); dup(f); dup(f); umask(027); chdir("/tmp/");
-						doSession(sock);
-						close(sock);
-						syslog(LOG_INFO,"Process with pid %d terminated",getpid());
-						exit(0);
-					}
-				} else {
+				f = fork();
+				if(f<0) { printf("Fork error [err=%d]\n",errno); exit(1); }
+				if(f==0) {
+					syslog(LOG_INFO,"Forkd new process with id = %d",getpid());
+					setsid();
+					for (f=getdtablesize();f>=0;--f) if(f!=sock) close(f);
+					f=open("/dev/null",O_RDWR); dup(f); dup(f); umask(027); chdir("/tmp/");
 					doSession(sock);
+					close(sock);
+					syslog(LOG_INFO,"Process with pid %d terminated",getpid());
+					exit(0);
 				}
 				close(sock);
 			}

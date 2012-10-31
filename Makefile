@@ -1,13 +1,13 @@
-all:	nbd nbd-server
+all:	nbd nbd-server nbd-cache-tool
 
-nbd: nbd.c nbd.h
-	@gcc -O2 -D_GNU_SOURCE nbd.c -g -o nbd
+nbd: nbd.c nbd.h util.c
+	@gcc -O2 -D_GNU_SOURCE nbd.c util.c -g -o nbd
 
-nbd-server: nbd-server.c nbd.h
-	@gcc -O2 -D_GNU_SOURCE nbd-server.c -g -o nbd-server
+nbd-cache-tool: nbd-cache.c nbd.h util.c nbd-cache-tool.c
+	@gcc -D_GNU_SOURCE nbd-cache-tool.c nbd-cache.c util.c -g -o nbd-cache-tool -ldb
 
-nbd-client: nbd-client.c nbd.h
-	@gcc -O2 -D_GNU_SOURCE nbd-client.c -g -o nbd-client
+nbd-server: nbd-server.c nbd.h util.c
+	@gcc -O2 -D_GNU_SOURCE nbd-server.c util.c -g -o nbd-server
 
 install:
 	git pull

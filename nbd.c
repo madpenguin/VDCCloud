@@ -6,28 +6,13 @@
  *	a view to providing links for network RAID10. It also provides scope for
  *	more than two links, and local caching / RAID rebuilds etc ...
  *
- *	TODO :: dynamically allocate NBD devices (on 'next free' basis)
- *	TODO :: open both devices and sit in a r/w loop (RAID10)
- *	TODO :: incorporate server to re-serve information
+ *	TODO :: improve NBD allocation / remove sleep timer
  *	TODO :: incorporate caching mechanism
  *	TODO :: incorporate RAID / recovory options
- *	TODO :: insert driver code / merge with server
- *      TODO :: This is potentially obsolete
- *      TODO :: remove device listing support
- *      
- *	This is a cut-down version of the nbd-server specifically targetted at the VDC Cloud project
- *	written from scratch with the following in mind;
- *		No redundant features
- *		Required volume name obtained dynamically from the client [authentication to come]
- *		Designed to run on ZFS volumes specifically
- *		Designed to record checksum and transaction log information
- *		More compact than original code
- *		For use with Caching / RAID nbd-client
- *
- *     	TODO :: Record volume name for posterity
- *     	TODO :: Implement "list" option to present real data
- *     	TODO :: Integrate Mongo config
- *     	TODO :: Localise socket for multiple connections
+ *  TODO :: remove device listing support
+ * 	TODO :: Record volume name for posterity
+ * 	TODO :: Convert READ/WRITE to use AIO for proper concurrency
+ * 	TODO :: Move to shared memory model
  */
 
 //	Headers / Include Files
@@ -55,13 +40,13 @@
 int             debug;
 extern char*    optarg;
 int             running = True;
-int 		db;		// current database connection
-uint64_t 	off;		// offset of current transation
-uint32_t 	len;		// length of current transaction
-uint32_t 	cmd;		// command of current transaction
-int 		debug = 0;	// global debug flag
-char		pbuf[1024];	// print buffer
-char* 		cmds[]	= { "READ" , "WRITE" , "CLOSE" , "FLUSH" , "TRIM" };
+int 			db;		// current database connection
+uint64_t 		off;		// offset of current transation
+uint32_t 		len;		// length of current transaction
+uint32_t 		cmd;		// command of current transaction
+int 			debug = 0;	// global debug flag
+char			pbuf[1024];	// print buffer
+char* 			cmds[]	= { "READ" , "WRITE" , "CLOSE" , "FLUSH" , "TRIM" };
 char            path1[64],path2[64];
 int             fd1,fd2;
 char            *host1=NULL,*host2=NULL;
@@ -107,8 +92,6 @@ int doError(char *text)
 	else	doLog(msg);	
 	return False;
 }
-
-
 
 int getNextFreeDev()
 {
@@ -538,45 +521,45 @@ int doNegotiate(int sock)
 	opt = ntohl(nbd.opts);
 	switch( opt )
 	{
-            case NBD_OPT_EXPORT_NAME:                
-		getBytes(sock,&len,sizeof(len));
-		len = ntohl(len);
-		name = malloc(len+1);
-		name[len]=0;
-		getBytes(sock,name,len);
+        case NBD_OPT_EXPORT_NAME:                
+			getBytes(sock,&len,sizeof(len));
+			len = ntohl(len);
+			name = malloc(len+1);
+			name[len]=0;
+			getBytes(sock,name,len);
 		
-                doLog("EXPORT NAME");
-                doLog(name);
+            doLog("EXPORT NAME");
+            doLog(name);
 
-                p1 = doServe(host1,name);
-                sleep(2);
-                p2 = doServe(host2,name);
-                sleep(2);
+            p1 = doServe(host1,name);
+            sleep(2);
+            p2 = doServe(host2,name);
+            sleep(2);
                 
-                sprintf(path1,"/dev/nbd%d",p1->dev);
-                sprintf(path2,"/dev/nbd%d",p2->dev);    
+            sprintf(path1,"/dev/nbd%d",p1->dev);
+            sprintf(path2,"/dev/nbd%d",p2->dev);    
 
-                fd1 = open(path1,O_RDWR|O_EXCL);
-                if(fd1<0) doError("Unable to open RAID10-1");
-                else doLog("Opened RAID-1 device");
-                fd2 = open(path2,O_RDWR|O_EXCL); 
-                if(fd2<0) doError("Unable to open RAID10-2");
-                else doLog("Opened RAID-2 device");
+            fd1 = open(path1,O_RDWR|O_EXCL);
+            if(fd1<0) doError("Unable to open RAID10-1");
+            else doLog("Opened RAID-1 device");
+            fd2 = open(path2,O_RDWR|O_EXCL); 
+            if(fd2<0) doError("Unable to open RAID10-2");
+            else doLog("Opened RAID-2 device");
                 
-		working = False;
-		status = True;
-		free(name);
-		break;
+			working = False;
+			status = True;
+			free(name);
+			break;
 		
 	    case NBD_OPT_ABORT:
-		doLog("Received ABORT from client");
-		status = False;
-		working = False;
-		break;
+			doLog("Received ABORT from client");
+			status = False;
+			working = False;
+			break;
 	
-            default:
-		doError("Unknown command");
-		break;
+        default:
+			doError("Unknown command");
+			break;
         }
     } while( working );	
     if(!status) return False;
