@@ -2,10 +2,12 @@
  *      nbd-cache.c
  *      (c) Gareth Bult 2012
  *
- *	TODO :: Add "sync" to mark block as written to net
- *	TODO :: Actually read/write data blocks
- *	TODO :: Plan for incremental recovert
- *	TODO :: Format option [clear], need to write zeros into cache
+ *	TODO :: Code to set / clear dirty flag
+ *	TODO :: Code to rebuild index from data
+ *	TODO :: Delete / expire cache entry
+ *	TODO :: implement use counts
+ *	TODO :: implement expire on LRU
+ *	
  */
 
 #include <err.h>
@@ -27,7 +29,7 @@
 
 #define FREE	0
 #define USED	1
-#define DIRTY	2
+#define DIRTY	7
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -37,6 +39,7 @@
 
 uint64_t	cache_blocks;	// cache size (raw 512 blocks)
 uint64_t	cache_entries;	// entries in cache
+uint64_t	data_offset;	// start of actual data
 uint32_t*	freeq;			// freeq for free blocks
 uint32_t*	freeq_next;		// next free block
 
@@ -51,8 +54,6 @@ DBT 		key,val;		//
 //
 //	Cache is opened and handle stored in 'cache'
 //	Cache size is read from the underlying device and sets "cache_blocks"
-//
-//	TODO :: embed magic + cache size info in cache header
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -75,6 +76,8 @@ int cacheInitDB(DB** db)
 
 int cacheOpen(char* dev)
 {
+	cache_header header;
+	
 	key.flags = 0;	// make sure flags are null'd
 	val.flags = 0;
 	//	
@@ -88,7 +91,8 @@ int cacheOpen(char* dev)
 		return False;
 	}
 	syslog(LOG_INFO,"Cache Open (%s) %lldM\n",dev,(unsigned long long)cache_blocks*512/1024/1024);
-	cache_entries = cache_blocks*512 / (1024+2*sizeof(index_entry));
+	cache_entries = (cache_blocks-1)*512 / (1024+2*sizeof(cache_entry));
+	data_offset = sizeof(cache_header)+cache_entries*sizeof(cache_entry);
 	//
 	if( cacheInitDB(&hash_used) && cacheInitDB(&hash_dirty) ){
 		freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
@@ -105,12 +109,12 @@ int cacheOpen(char* dev)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheSaveHash(index_entry* base,DB* db)
+int cacheSaveHash(cache_entry* base,DB* db)
 {
 	int ret;
 	int count=0;
 	hash_entry* entry;
-	index_entry* ptr;
+	cache_entry* ptr;
 	DBC *cursor;
 	
 	if( db->cursor(db,NULL,&cursor,0) != 0) {
@@ -133,15 +137,15 @@ int cacheSaveHash(index_entry* base,DB* db)
 int cacheSave()
 {
 	int bytes,ret,slot;
-	int meta_size = cache_entries*sizeof(index_entry);
-	index_entry* index_base = (index_entry*)malloc(meta_size);
+	int meta_size = cache_entries*sizeof(cache_entry);
+	cache_entry* index_base = (cache_entry*)malloc(meta_size);
 
 	memset(index_base,0,meta_size);
 	
 	int used = cacheSaveHash(index_base,hash_used);
 	int dirty = cacheSaveHash(index_base,hash_dirty);
 	
-	if(lseek(cache,0,SEEK_SET)==-1) {
+	if(lseek(cache,sizeof(cache_header),SEEK_SET)==-1) {
 		syslog(LOG_ALERT,"Unable to seek to the beginning of the cache");
 		return False;
 	}
@@ -167,60 +171,69 @@ int cacheSave()
 void cacheClose(char* dev)
 {
 	cacheSave();
-	free(freeq);
 	hash_used->close(hash_used,0);
 	hash_dirty->close(hash_dirty,0);
+	free(freeq);
 	syslog(LOG_INFO,"Cache (%s) closed",dev);
-}
-
-///////////////////////////////////////////////////////////////////////////////
-//
-//	cacheRead	- read an entry from the cache
-//
-// 	TODO :: get actual data rather than header entries
-//
-///////////////////////////////////////////////////////////////////////////////
-
-hash_entry* cacheRead(uint64_t block)
-{
-	int ret;
-	
-	key.data = &block;
-	key.size = sizeof(block);
-	
-	ret = hash_used->get(hash_used,NULL,&key,&val,0);
-	if( ret == DB_NOTFOUND ) {
-		ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0);
-		if( ret == DB_NOTFOUND ) return NULL;
-	}
-	if(ret !=0) {
-		syslog(LOG_ALERT,"Read Error on memory DB");
-		return NULL;
-	}
-	return (hash_entry*)(val.data);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 //
 //	cacheClear	- initialise the cache
 //
-//	TODO :: clear down the data area too!
-//
 ///////////////////////////////////////////////////////////////////////////////
 
 int cacheClear()
 {
-	int bytes;
-	int meta_size = cache_entries*sizeof(index_entry);
-	char *blank = (char*)malloc(meta_size);
+	cache_header 	header;
+	char			buffer[NCACHE_CSIZE];
+	uint64_t 		left_to_write = cache_blocks * 512;
+	int				cycles = left_to_write / NCACHE_CSIZE;
+	int 			increment = cycles / 40;
+	uint64_t 		block;
+	int 			count,i,size;
 	
-	memset(blank,0,meta_size);
-	bytes = write(cache,blank,meta_size);
-	if(bytes != meta_size) {
-		syslog(LOG_ALERT,"Unable to clear cache header");
-		return False;
+	if(lseek(cache,0,SEEK_SET)==-1) {		
+		syslog(LOG_ALERT,"Seek error, err=%d",errno);	
+		return False;					
+	}
+	memset(&buffer,0,sizeof(buffer));
+	printf("Formatting Cache Device (%lldM)\n",(unsigned long long)(cache_blocks*512/1024/1024));
+	printf("["); for(i=0;i<40;i++) printf(" "); printf("]\r\%c[C",27);
+	
+	count=0;
+	while( left_to_write > 0 )
+	{
+		size = left_to_write > NCACHE_CSIZE?NCACHE_CSIZE:left_to_write;
+		if( write(cache,buffer,size) != size) {
+			printf("\nWrite Error, errno=%d\n",errno);
+			exit(1);
+		}
+		left_to_write -= size;
+		count++;
+		if(count==increment) {
+			printf("."); fflush(stdout);
+			count=0;
+		}
+	}
+	printf("\nWriting header...");
+	fflush(stdout);
+	//
+	//	Write cache header
+	//
+	if(lseek(cache,0,SEEK_SET)==-1) {		
+		syslog(LOG_ALERT,"Seek error, err=%d",errno);	
+		return False;					
+	}
+	memcpy(&header.magic,CACHE_MAGIC,sizeof(header.magic));
+	header.size = cache_blocks;
+	if( write(cache,&header,sizeof(cache_header)) != sizeof(cache_header)) {
+		syslog(LOG_ALERT,"Write error, err=%d",errno);	
+		return False;					
 	}
 	syslog(LOG_INFO,"Cache initialised, ready for %d entries\n",(int)cache_entries);
+	printf("Ok\n");
+	return True;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -232,17 +245,17 @@ int cacheClear()
 int cacheLoad()
 {
 	int bytes,ret,slot;
-	int meta_size = cache_entries*sizeof(index_entry);
+	int meta_size = cache_entries*sizeof(cache_entry);
 	int used=0;
 	int dirty=0;
 	DB* db;
 
-	if(lseek(cache,0,SEEK_SET)==-1) {
+	if(lseek(cache,sizeof(cache_header),SEEK_SET)==-1) {
 		syslog(LOG_ALERT,"Unable to seek BOF in cacheLoad");
 		return False;
 	}
-	index_entry* index_base = (index_entry*)malloc(meta_size);
-	index_entry* ptr = index_base;
+	cache_entry* index_base = (cache_entry*)malloc(meta_size);
+	cache_entry* ptr = index_base;
 	bytes = read(cache,ptr,meta_size);
 	if( bytes != meta_size ) {
 		syslog(LOG_ALERT,"Cache header is wrong size!");
@@ -286,28 +299,65 @@ int cacheLoad()
 
 ///////////////////////////////////////////////////////////////////////////////
 //
+//	cacheRead	- read an entry from the cache
+//
+///////////////////////////////////////////////////////////////////////////////
+
+void* cacheRead(uint64_t block)
+{
+	int ret;
+	hash_entry* entry;
+	void* buffer = (void*)malloc(NCACHE_ESIZE);
+	
+	key.data = &block;
+	key.size = sizeof(block);
+	
+	if( ret = hash_used->get(hash_used,NULL,&key,&val,0) == DB_NOTFOUND ) {
+		if( ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0) == DB_NOTFOUND ) return NULL;
+	}
+	if(ret !=0) {
+		syslog(LOG_ALERT,"Read Error on memory DB");
+		return NULL;
+	}
+	entry = (hash_entry*)(val.data);
+	//
+	SEEK_BLOCK(entry->slot,"READ");
+	READ_BLOCK(entry->slot,buffer);
+	return (buffer+sizeof(cache_entry));
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//
 //	cacheWrite	- write a new entry into the local cache
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheWrite(uint64_t block)
+int cacheWrite(uint64_t block, void* data)
 {
-	int ret;
 	hash_entry* entry = (hash_entry*)malloc(sizeof(hash_entry));
-	
+	void* buffer = (void*)malloc(NCACHE_ESIZE);
+	cache_entry* index = (cache_entry*)buffer;
+	//
 	entry->slot 	= *--freeq_next;
 	entry->block 	= block;
 	entry->dirty 	= DIRTY;
-	
+	//
 	val.data = entry;
 	val.size = sizeof(hash_entry);
 	key.data = &entry->block;
 	key.size = sizeof(entry->block);
-		
-	if(ret = hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
+	//
+	if( hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
 		syslog(LOG_ALERT,"Unable to insert entry into HASH");
 		return False;
 	}
+	//
+	index->block = block;
+	index->dirty = DIRTY;
+	memcpy(buffer+sizeof(cache_entry),data,NCACHE_BSIZE);
+	//
+	SEEK_BLOCK(entry->slot,"WRITE");
+	WRITE_BLOCK(entry->slot,buffer);
 	return True;
 }
 
@@ -345,4 +395,38 @@ int cacheListHash(DB *db,char *title)
 int cacheList()
 {
 	return cacheListHash(hash_used,"Used") && cacheListHash(hash_dirty,"Dirty");	
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+void cacheTest()
+{
+	int fd = open("/etc/passwd",O_RDONLY);
+	if(fd<1) {
+		printf("Error opening file, err=%d\n",errno);
+		return;
+	}
+	
+	char buffer[NCACHE_BSIZE];
+	int block=10;
+	int bytes;
+	
+	do {
+		memset(buffer,0,sizeof(buffer));
+		bytes = read(fd,&buffer,sizeof(buffer));
+		if(bytes>0) {
+			printf("Write=%d,%d\n",cacheWrite(block++,buffer),bytes);
+		}
+	} while (bytes>0);
+}
+
+void cacheVerify()
+{
+	void* data;
+	int block;
+	
+	for(block=10;block<13;block++) {
+		data = cacheRead(block);
+		printf("%s",(char*)data);
+	}
 }

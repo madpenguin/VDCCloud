@@ -20,10 +20,12 @@
 
 #include "nbd.h"
 
+void* cacheRead(uint64_t);
+
 void main(int argc,char **argv)
 {
     int c;
-	hash_entry* entry;
+	void* data;
 	char *dev="/dev/cache/onegig";
  	
 	if(!cacheOpen(dev)) {
@@ -31,7 +33,7 @@ void main(int argc,char **argv)
 		exit(1);
 	}
 	
-    while ((c = getopt (argc, argv, "lcw:r:")) != -1)
+    while ((c = getopt (argc, argv, "lcw:r:tv")) != -1)
     {
         switch(c)
     	{
@@ -44,17 +46,21 @@ void main(int argc,char **argv)
 			break;
 		case 'r':
 			cacheLoad();
-			entry = cacheRead(atoi(optarg));
-			if(!entry) printf("Not found!\n");
-			else printf("Entry=[%lld:%lld:%d]\n",
-				(unsigned long long)entry->block,
-				(unsigned long long)entry->slot,
-				entry->dirty);
+			data = cacheRead(atoi(optarg));
+			if(!data) printf("Not found!\n");
 			break;
 		case 'l':
 			cacheLoad();
 			cacheList();
 			break;
+		case 't':
+			cacheLoad();
+			cacheTest();
+			break;
+		case 'v':
+			cacheLoad();
+			cacheVerify();
+			break;		
         default:
 			exit(1);
         }

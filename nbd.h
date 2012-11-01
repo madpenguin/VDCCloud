@@ -30,6 +30,7 @@
 //	Constants used for Client-Server negotiation
 
 #define INIT_PASSWD 	    "NBDMAGIC"
+#define CACHE_MAGIC			"NBDCACHE"
 #define OPTS_MAGIC          0x49484156454F5054LL
 #define CLISERV_MAGIC       0x00420281861253LL
 #define NBD_REQUEST_MAGIC   0x25609513
@@ -102,10 +103,41 @@ typedef struct hash_entry {
 	uint8_t		dirty;
 }  __attribute__ ((packed)) hash_entry;
 
-typedef struct index_entry {
+typedef struct cache_entry {
 	
 	uint64_t	block;
 	uint8_t		dirty;
 	
-} __attribute__ ((packed)) index_entry ;
+} __attribute__ ((packed)) cache_entry;
 
+typedef struct cache_header {
+
+	char		magic[8];
+	uint64_t	size;
+	uint8_t		hosts;
+	char		dummy[238];
+		
+} __attribute__ ((packed)) cache_header;
+
+#define NCACHE_CSIZE 32768
+#define NCACHE_BSIZE 1024
+#define NCACHE_ESIZE (NCACHE_BSIZE + sizeof(cache_entry))
+
+#define	SEEK_BLOCK(slot,label)	\
+	syslog(LOG_INFO,"SEEK slot [%d] for [%s] @ %llx",(int)slot,label,(unsigned long long)(cache,data_offset + slot*NCACHE_ESIZE));			\
+	if(lseek(cache,data_offset + slot*NCACHE_ESIZE,SEEK_SET)==-1) {		\
+		syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)slot,errno);	\
+		return False;													\
+	}
+
+#define READ_BLOCK(slot,buffer)	\
+	if( read(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE ) {				\
+		syslog(LOG_ALERT,"Read error, slot=%d,err=%d",(int)slot,errno);	\
+		return False;													\
+	}
+
+#define WRITE_BLOCK(slot,buffer)	\
+	if( write(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE) {				\
+		syslog(LOG_ALERT,"Write error, slot=%d,err=%d",(int)slot,errno);\
+		return False;													\
+	}
