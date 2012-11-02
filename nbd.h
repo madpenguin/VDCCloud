@@ -1,5 +1,8 @@
 /* */
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define NBD_SET_SOCK    _IO( 0xab, 0 )
 #define NBD_SET_BLKSIZE _IO( 0xab, 1 )
@@ -99,26 +102,29 @@ typedef struct process {
 
 typedef struct hash_entry {
 	uint64_t	block;
-	uint64_t	slot;
+	uint32_t	slot;
+	uint32_t	usecount;
 	uint8_t		dirty;
-}  __attribute__ ((packed)) hash_entry;
+} hash_entry;
 
 typedef struct cache_entry {
 	
 	uint64_t	block;
+	uint32_t	usecount;	
 	uint8_t		dirty;
 	
 } __attribute__ ((packed)) cache_entry;
 
 typedef struct cache_header {
 
-	char		magic[8];
-	uint64_t	size;
-	uint8_t		hosts;
-	char		dummy[238];
+	char			magic[8];
+	uint64_t		size;
+	uint8_t			hcount;
+	struct in_addr	hosts[6];
 		
 } __attribute__ ((packed)) cache_header;
 
+#define NCACHE_HSIZE 512
 #define NCACHE_CSIZE 32768
 #define NCACHE_BSIZE 1024
 #define NCACHE_ESIZE (NCACHE_BSIZE + sizeof(cache_entry))
@@ -140,4 +146,10 @@ typedef struct cache_header {
 	if( write(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE) {				\
 		syslog(LOG_ALERT,"Write error, slot=%d,err=%d",(int)slot,errno);\
 		return False;													\
+	}
+
+#define WRITE_INDEX(slot,buffer)											\
+	if( write(cache,buffer,sizeof(cache_entry)) != sizeof(cache_entry)) {	\
+		syslog(LOG_ALERT,"Write error, slot=%d,err=%d",(int)slot,errno);	\
+		return False;														\
 	}
