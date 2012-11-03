@@ -6,7 +6,6 @@
  *	Impelemts LFU model using BDB / secondary index.
  *
  *
- *	TODO :: optimise hash algorithm for block #'s
  *	
  */
 
@@ -65,54 +64,70 @@ cache_header header;
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheInitDB(DB** db)
-{
-	int ret;
-	DB* d;
-	
-	if( db_create(db,NULL,0) != 0) {
-		syslog(LOG_ALERT,"Unable to create DB handle");
-		return False;
-	}
-	d=*db;
-	if( ret = d->open(d, NULL, NULL, NULL, DB_HASH , DB_CREATE, 0777) != 0) {
-		syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);
-		return False;
-	}
-	return True;
-}
-
-int cacheInitIndex(DB** db)
-{
-	int ret;
-	DB* d;
-	
-	if( db_create(db,NULL,0) != 0) {
-		syslog(LOG_ALERT,"Unable to create DB handle");
-		return False;
-	}
-	d=*db;
-	d->set_flags(d,DB_DUP|DB_DUPSORT);	
-	if( ret = d->open(d, NULL, NULL, NULL, DB_BTREE , DB_CREATE, 0777) != 0) {
-		syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);
-		return False;
-	}
-	return True;
-}
-
-int cacheIndexKey(DB* db,const DBT* key,const DBT* val, DBT* idx)
-{
-	hash_entry* entry = (hash_entry*)val->data;
-	//printf("Slot %ld, UseCount %d\n",(unsigned long)entry->slot,entry->usecount);	
-	idx->data = &entry->usecount;
-	idx->size = sizeof(entry->usecount);
-	return 0;
-}
-
 int cacheOpen(char* dev,char** hosts)
 {
-	int i;
+	//
+	//	cacheIndexKey - generate index key for secondary index (by usecount)
+	//
+	int cacheIndexKey(DB* db,const DBT* key,const DBT* val, DBT* idx)
+	{
+		hash_entry* entry = (hash_entry*)val->data;
+		idx->data = &entry->usecount;
+		idx->size = sizeof(entry->usecount);
+		return 0;
+	}
+	//
+	//	cacheHashFn - optimised hashing function for block numbers
+	//
+	uint32_t cacheHashFn(DB *db,const void *bytes, uint32_t length)
+	{
+		uint64_t block;
+		uint32_t ret;
+		memcpy(&block,bytes,sizeof(block));
+		ret=block;
+		return ret;
+	}
+	//
+	//	cacheInitDB - initialise a HASH DB
+	//
+	int cacheInitDB(DB** db)
+	{
+		int ret;
+		DB* d;
 	
+		if( db_create(db,NULL,0) != 0) {
+			syslog(LOG_ALERT,"Unable to create DB handle");
+			return False;
+		}
+		d=*db;
+		d->set_h_hash(d,cacheHashFn);		
+		if( ret = d->open(d, NULL, NULL, NULL, DB_HASH , DB_CREATE, 0777) != 0) {
+			syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);	
+			return False;
+		}
+		return True;
+	}
+	//
+	//	cacheInitIndex - initialise a BTREE DB
+	//
+	int cacheInitIndex(DB** db)
+	{
+		int ret;
+		DB* d;
+	
+		if( db_create(db,NULL,0) != 0) {
+			syslog(LOG_ALERT,"Unable to create DB handle");
+			return False;
+		}
+		d=*db;
+		d->set_flags(d,DB_DUP|DB_DUPSORT);
+		if( ret = d->open(d, NULL, NULL, NULL, DB_BTREE , DB_CREATE, 0777) != 0) {
+			syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);
+			return False;
+		}
+		return True;
+	}
+	//
 	key.flags = 0;	// make sure flags are null'd
 	val.flags = 0;
 	//	
@@ -125,58 +140,53 @@ int cacheOpen(char* dev,char** hosts)
 		syslog(LOG_ALERT,"Unable to read cache size, err=%d\n",errno);
 		return -1;
 	}
-	
-	if(lseek(cache,0,SEEK_SET)==-1) {
-		syslog(LOG_ALERT,"Unable to seek to the beginning of the cache");
+	READ_HEADER(cache,header);
+	//
+	cache_entries 	= (cache_blocks-1)*512 / (1024+2*sizeof(cache_entry));
+	data_offset 	= NCACHE_HSIZE+cache_entries*sizeof(cache_entry);
+	//
+	if( !cacheInitDB(&hash_used) || !cacheInitDB(&hash_dirty) || !cacheInitIndex(&hash_index) ){
 		return -1;
 	}
-	if( read(cache,&header,sizeof(header)) != sizeof(header)) {
-		syslog(LOG_ALERT,"Failed to read cache header");
+	if(hash_used->associate(hash_used,NULL,hash_index,cacheIndexKey,0)) {
+		syslog(LOG_ALERT,"Failed to create Index DB");
 		return -1;
-	} 	
+	}
 	//
-	syslog(LOG_INFO,"Cache Open (%s) %lldM\n",dev,(unsigned long long)cache_blocks*512/1024/1024);
-	cache_entries = (cache_blocks-1)*512 / (1024+2*sizeof(cache_entry));
-	data_offset = NCACHE_HSIZE+cache_entries*sizeof(cache_entry);
+	if(memcmp(&header.magic,CACHE_MAGIC,sizeof(header.magic))) {
+		syslog(LOG_ERR,"Bad Magic in Cache header - reformat this device");
+		return 1;
+	}
 	//
-	if( cacheInitDB(&hash_used) && cacheInitDB(&hash_dirty) && cacheInitIndex(&hash_index) ){
-		freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
-		freeq_next = freeq;
-		if(memcmp(&header.magic,CACHE_MAGIC,sizeof(header.magic))) {
-			syslog(LOG_ERR,"Bad Magic in Cache header - reformat this device");
-			return 1;
-		} else {
-			syslog(LOG_INFO,"Cache header :: device size (%lldM)",
-				   (unsigned long long)(header.size*512/1024/1024),header.hcount);
-			
-			if(hash_used->associate(hash_used,NULL,hash_index,cacheIndexKey,0)) {
-				syslog(LOG_ALERT,"Failed to create Index DB");
-				return False;
-			}
-			
-			i=0;
-			DIRTY=1;
-			while( hosts[i] ) {
-				DIRTY = DIRTY << 1;
-				DIRTY += 1;
-				if(i<header.hcount) {
-					if(!strcmp(inet_ntoa(header.hosts[i]),hosts[i])) syslog(LOG_INFO,"Host # %d :: %s", i,inet_ntoa(header.hosts[i]));
-					else {
-						syslog(LOG_ERR,"Host # %d MISMATCH :: requested [%s] header says [%s]",i,hosts[i],inet_ntoa(header.hosts[i]));
-						return 1;
-					}
-				}
-				i++;
-			}
-			if(i!=header.hcount) {
-				syslog(LOG_ERR,"Host Count is wrong, header specifies %d hosts, requested %d",header.hcount,i);
+	freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
+	freeq_next = freeq;
+	//		
+	syslog(LOG_INFO,"Opening (%s), size (%lldM), entries (%ld)",dev,(unsigned long long)cache_blocks*512/1024/1024,(unsigned long)cache_entries);
+	//
+	int i=0;
+	DIRTY=1;
+	while( hosts[i] ) {
+		DIRTY = DIRTY << 1;
+		DIRTY += 1;
+		if(i<header.hcount) {
+			if(!strcmp(inet_ntoa(header.hosts[i]),hosts[i])) syslog(LOG_INFO,"Host # %d :: %s", i,inet_ntoa(header.hosts[i]));
+			else {
+				syslog(LOG_ERR,"Host # %d MISMATCH :: requested [%s] header says [%s]",i,hosts[i],inet_ntoa(header.hosts[i]));
 				return 1;
 			}
 		}
-		return 0;		
+		i++;
 	}
-	close(cache);
-	return -1;
+	if(i!=header.hcount) {
+		syslog(LOG_ERR,"Host Count is wrong, header specifies %d hosts, requested %d",header.hcount,i);
+		return 1;
+	}
+	//
+	if(header.open)
+			cacheReIndex();
+	else	cacheLoad();
+	//
+	return 0;		
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -185,34 +195,33 @@ int cacheOpen(char* dev,char** hosts)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheSaveHash(cache_entry* base,DB* db)
-{
-	int ret;
-	int count=0;
-	hash_entry* entry;
-	cache_entry* ptr;
-	DBC *cursor;
-	
-	if( db->cursor(db,NULL,&cursor,0) != 0) {
-		syslog(LOG_ALERT,"Unable to create cursor in cacheSave");
-		return -1;
-	}
-	ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
-	while( ret == 0 ) {
-		entry			= (hash_entry*)(val.data);
-		ptr				= base + entry->slot;		
-		ptr->dirty 		= entry->dirty;
-		ptr->block 		= entry->block;
-		ptr->usecount	= entry->usecount;
-		ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
-		count++;
-	}
-	cursor->c_close(cursor);
-	return count;
-}
-
 int cacheSave()
 {
+	int cacheSaveHash(cache_entry* base,DB* db)
+	{
+		int ret;
+		int count=0;
+		hash_entry* entry;
+		cache_entry* ptr;
+		DBC *cursor;
+	
+		if( db->cursor(db,NULL,&cursor,0) != 0) {
+			syslog(LOG_ALERT,"Unable to create cursor in cacheSave");
+			return -1;
+		}
+		ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
+		while( ret == 0 ) {
+			entry			= (hash_entry*)(val.data);
+			ptr				= base + entry->slot;		
+			ptr->dirty 		= entry->dirty;
+			ptr->block 		= entry->block;
+			ptr->usecount	= entry->usecount;
+			ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
+			count++;
+		}
+		cursor->c_close(cursor);	
+		return count;
+	}
 	int bytes,ret,slot;
 	int meta_size = cache_entries*sizeof(cache_entry);
 	cache_entry* index_base = (cache_entry*)malloc(meta_size);
@@ -227,6 +236,7 @@ int cacheSave()
 		return False;
 	}
 	bytes = write(cache,index_base,meta_size);
+	free(index_base);
 	if(bytes != meta_size) {
 		syslog(LOG_ALERT,"Failed to write to cache");
 		return False;
@@ -252,6 +262,16 @@ void cacheClose(char* dev)
 	hash_dirty->close(hash_dirty,0);
 	free(freeq);
 	syslog(LOG_INFO,"Cache (%s) closed",dev);
+	
+	header.open = 0;
+	if(lseek(cache,0,SEEK_SET)!=-1) {
+		if( write(cache,&header,sizeof(header)) != sizeof(header)) {
+			syslog(LOG_ALERT,"Failed to write cache header");
+		}
+	} else
+		syslog(LOG_ALERT,"Unable to seek to the beginning of the cache");
+
+	close(cache);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -268,8 +288,6 @@ int cacheFormat(char** hosts)
 	int 			increment = cycles / 40;
 	uint64_t 		block;
 	int 			count,i,size;
-	
-	//goto skip;
 	
 	if(lseek(cache,0,SEEK_SET)==-1) {		
 		syslog(LOG_ALERT,"Seek error, err=%d",errno);	
@@ -294,10 +312,8 @@ int cacheFormat(char** hosts)
 			count=0;
 		}
 	}
-	printf("\nWriting header...");
+	printf("\nFlushing...\n");
 	fflush(stdout);
-	
-skip:
 	//
 	//	Write cache header
 	//
@@ -319,7 +335,6 @@ skip:
 		return False;					
 	}
 	syslog(LOG_INFO,"Cache initialised, ready for %d entries\n",(int)cache_entries);
-	printf("Ok\n");
 	return True;
 }
 
@@ -364,16 +379,16 @@ int cacheLoad()
 				dirty++;
 				break;
 		}
-		hash_entry* entry = (hash_entry*)malloc(sizeof(hash_entry));
-		entry->slot 	= slot;
-		entry->block 	= ptr->block;
-		entry->dirty 	= ptr->dirty;
-		entry->usecount	= ptr->usecount;
+		hash_entry entry;
+		entry.slot 		= slot;
+		entry.block 	= ptr->block;
+		entry.dirty 	= ptr->dirty;
+		entry.usecount	= ptr->usecount;
 			
-		val.data = entry;
+		val.data = &entry;
 		val.size = sizeof(hash_entry);
-		key.data = &entry->block;
-		key.size = sizeof(entry->block);
+		key.data = &entry.block;
+		key.size = sizeof(entry.block);
 			
 		if(ret = db->put(db,NULL,&key,&val,0) !=0) {
 			syslog(LOG_ALERT,"Unable to insert entry into HASH");
@@ -382,36 +397,9 @@ int cacheLoad()
 		ptr++;
 	}
 	syslog(LOG_INFO,"Loaded %d used, %d dirty, free list size = %ld",used,dirty,freeq_next-freeq);
-	free(index_base);	
-}
-
-///////////////////////////////////////////////////////////////////////////////
-//
-//	cacheUse	- increment the use-count for a given block
-//
-///////////////////////////////////////////////////////////////////////////////
-
-void cacheUse(uint64_t block)
-{
-	int useCount(DB* db)
-	{
-		int ret;
-		hash_entry* entry;
-		ret = db->get(db,NULL,&key,&val,0);
-		if(ret == DB_NOTFOUND) return False;
-		entry = (hash_entry*)(val.data);
-		entry->usecount++;
-		if( db->put(db,NULL,&key,&val,0) !=0) {
-			syslog(LOG_ALERT,"Error updating USE count");
-			return False;
-		}
-		return True;		
-	}	
-	key.data = &block;
-	key.size = sizeof(block);
-	if(useCount(hash_used)) return;
-	if(useCount(hash_dirty)) return;
-	syslog(LOG_ERR,"Attempt to increment use count for uncached block [%lld]",(unsigned long long)block);
+	free(index_base);
+	header.open = 1;		
+	WRITE_HEADER(cache,header);
 }
 	
 ///////////////////////////////////////////////////////////////////////////////
@@ -424,23 +412,29 @@ void* cacheRead(uint64_t block)
 {
 	int ret;
 	hash_entry* entry;
-	void* buffer = (void*)malloc(NCACHE_ESIZE);
+	static char buffer[NCACHE_ESIZE];
+	DB* db;
 	
 	key.data = &block;
 	key.size = sizeof(block);
 	
-	if( ret = hash_used->get(hash_used,NULL,&key,&val,0) == DB_NOTFOUND ) {
-		if( ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0) == DB_NOTFOUND ) return NULL;
-	}
-	if(ret !=0) {
-		syslog(LOG_ALERT,"Read Error on memory DB");
-		return NULL;
+	ret = hash_used->get(hash_used,NULL,&key,&val,0);
+	if( ret==0 ) db=hash_used;
+	else {
+		ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0);
+		if( ret==0 ) db=hash_dirty;
+		else return NULL;
 	}
 	entry = (hash_entry*)(val.data);
 	//
 	SEEK_BLOCK(entry->slot,"READ");
 	READ_BLOCK(entry->slot,buffer);
-	cacheUse(block);
+	
+	entry->usecount++;
+	if( db->put(db,NULL,&key,&val,0) !=0) {
+		syslog(LOG_ALERT,"Error updating USE count");
+		return False;
+	}
 	return (buffer+sizeof(cache_entry));
 }
 
@@ -453,7 +447,8 @@ void* cacheRead(uint64_t block)
 int cacheWrite(uint64_t block, void* data)
 {
 	hash_entry* entry = NULL;
-	void* buffer = (void*)malloc(NCACHE_ESIZE);
+	hash_entry new_entry;
+	char buffer[NCACHE_ESIZE];
 	cache_entry *index = (cache_entry*)buffer;
 	DB* db = hash_used;
 	int ret;
@@ -466,7 +461,7 @@ int cacheWrite(uint64_t block, void* data)
 		db = hash_dirty;
 		ret = db->get(db,NULL,&key,&val,0);
 		if( ret != 0) {
-			entry = (hash_entry*)malloc(sizeof(hash_entry));
+			entry = &new_entry;
 			entry->slot 	= *--freeq_next;
 			entry->block 	= block;
 			entry->usecount	= 0;
@@ -501,36 +496,35 @@ int cacheWrite(uint64_t block, void* data)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheListHash(DB *db,char *title)
-{
-	int bytes,ret,slot;
-	hash_entry* entry;
-	DBC *cursor;	
-
-	if( db->cursor(db,NULL,&cursor,0) != 0) {
-		syslog(LOG_ALERT,"Unable to allocatoe Cursor!");
-		return False;
-	}
-	ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
-	printf("%s entries ...\n",title);
-	printf("+----------+----------+----+--------+\n");
-	printf("| %8s | %8s | %2s | %-6s |\n","Slot","Block","Fl","UseCnt");
-	printf("+----------+----------+----+--------+\n");	
-	while( ret == 0 ) {
-		entry = (hash_entry*)(val.data);
-		printf("| %8lld | %8lld | %2d | %6d |\n",
-			   (unsigned long long)entry->slot,
-			   (unsigned long long)entry->block,
-			   entry->dirty, entry->usecount);
-		ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
-	}
-	cursor->c_close(cursor);
-	printf("+----------+----------+----+--------+\n");	
-	return True;
-}
-
 int cacheList()
 {
+	int cacheListHash(DB *db,char *title)
+	{
+		int bytes,ret,slot;
+		hash_entry* entry;
+		DBC *cursor;	
+
+		if( db->cursor(db,NULL,&cursor,0) != 0) {
+			syslog(LOG_ALERT,"Unable to allocatoe Cursor!");
+			return False;
+		}
+		ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
+		printf("%s entries ...\n",title);
+		printf("+----------+----------+----+--------+\n");
+		printf("| %8s | %8s | %2s | %-6s |\n","Slot","Block","Fl","UseCnt");
+		printf("+----------+----------+----+--------+\n");	
+		while( ret == 0 ) {
+				entry = (hash_entry*)(val.data);
+		printf("| %8lld | %8lld | %2d | %6d |\n",
+				   (unsigned long long)entry->slot,
+				   (unsigned long long)entry->block,
+				   entry->dirty, entry->usecount);
+			ret = cursor->c_get(cursor,&key,&val,DB_NEXT);
+		}
+		cursor->c_close(cursor);
+		printf("+----------+----------+----+--------+\n");	
+		return True;
+	}
 	return cacheListHash(hash_index,"Used") && cacheListHash(hash_dirty,"Dirty");	
 }
 
@@ -635,16 +629,16 @@ int cacheReIndex()
 				db = hash_dirty; dirty++;
 				break;
 		}
-		hash_entry* entry = (hash_entry*)malloc(sizeof(hash_entry));
-		entry->slot 	= slot;
-		entry->block 	= index->block;
-		entry->dirty 	= index->dirty;
-		entry->usecount	= index->usecount;
+		hash_entry entry;
+		entry.slot 	= slot;
+		entry.block 	= index->block;
+		entry.dirty 	= index->dirty;
+		entry.usecount	= index->usecount;
 			
-		val.data = entry;
+		val.data = &entry;
 		val.size = sizeof(hash_entry);
-		key.data = &entry->block;
-		key.size = sizeof(entry->block);
+		key.data = &entry.block;
+		key.size = sizeof(entry.block);
 			
 		if(db->put(db,NULL,&key,&val,0) !=0) {
 			syslog(LOG_ALERT,"Unable to insert entry into HASH");
@@ -691,6 +685,7 @@ int cacheExpire(int units)
 			syslog(LOG_ALERT,"Error expiring key from DB");
 			break;
 		}
+		free(val.data);
 	}
 	cursor->c_close(cursor);
 	if( !units && !ret) return True;
@@ -698,6 +693,10 @@ int cacheExpire(int units)
 	return False;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+//
+//	cacheTest	- run a basic read-write test in the cache (destructive!)
+//
 ///////////////////////////////////////////////////////////////////////////////
 
 void cacheTest()
@@ -709,25 +708,81 @@ void cacheTest()
 	}
 	
 	char buffer[NCACHE_BSIZE];
-	int block=10;
+	int block=1000;
 	int bytes;
 	
 	do {
 		memset(buffer,0,sizeof(buffer));
-		bytes = read(fd,&buffer,sizeof(buffer));
-		if(bytes>0) {
-			printf("Write=%d,%d\n",cacheWrite(block++,buffer),bytes);
-		}
+		bytes = read(fd,buffer,sizeof(buffer));
+		cacheWrite(block++,&buffer);
 	} while (bytes>0);
-}
-
-void cacheVerify()
-{
-	void* data;
-	int block;
 	
-	for(block=10;block<13;block++) {
+	void* data;
+	
+	for(block=1000;block<1003;block++) {
 		data = cacheRead(block);
 		printf("%s",(char*)data);
 	}
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//	cacheStats	- print out some stats showing the state of the structures
+//
+///////////////////////////////////////////////////////////////////////////////
+
+void cacheStats()
+{
+	void hash_stats(DB* db,char* title)
+	{
+		void *sp;
+		if(db->stat(db,NULL,&sp,0)!=0) {
+			printf("STAT Failed");
+			return;
+		}
+		DB_HASH_STAT* stats = (DB_HASH_STAT*)sp;
+		printf("------ %s -------\n",title);
+		printf("Hash Keys ......... %ld\n",(unsigned long)stats->hash_nkeys);
+		printf("Hash Data ......... %ld\n",(unsigned long)stats->hash_ndata);
+		printf("Hash Page Count ... %ld\n",(unsigned long)stats->hash_pagecnt);
+		printf("Hash Page Size .... %ld\n",(unsigned long)stats->hash_pagesize);
+		printf("Hash Fill Factor .. %ld\n",(unsigned long)stats->hash_ffactor);
+		printf("Hash Buckets ...... %ld\n",(unsigned long)stats->hash_buckets);
+		printf("Hash Free ......... %ld\n",(unsigned long)stats->hash_free);
+		printf("Hash Free Bytes ... %ld\n",(unsigned long)stats->hash_bfree);
+		printf("Hash Big Pages .... %ld\n",(unsigned long)stats->hash_bigpages);
+		printf("Hash Big Free ..... %ld\n",(unsigned long)stats->hash_big_bfree);
+		printf("Hash Overflows .... %ld\n",(unsigned long)stats->hash_overflows);
+		printf("Hash Oflow free ... %ld\n",(unsigned long)stats->hash_ovfl_free);
+		printf("Hash Dup .......... %ld\n",(unsigned long)stats->hash_dup);
+		printf("Hash Dup Free ..... %ld\n",(unsigned long)stats->hash_dup_free);
+	}
+	
+	void btree_stats(DB* db,char* title)
+	{
+		void *sp;
+		if(db->stat(db,NULL,&sp,0)!=0) {
+			printf("STAT Failed");
+			return;
+		}
+		DB_BTREE_STAT* stats = (DB_BTREE_STAT*)sp;
+		printf("------ %s -------\n",title);
+		printf("Hash Keys ......... %ld\n",(unsigned long)stats->bt_nkeys);
+		printf("Hash Data ......... %ld\n",(unsigned long)stats->bt_ndata);
+		printf("Hash Page Count ... %ld\n",(unsigned long)stats->bt_pagecnt);
+		printf("Hash Page Size .... %ld\n",(unsigned long)stats->bt_pagesize);
+		printf("Min Key ........... %ld\n",(unsigned long)stats->bt_minkey);
+		printf("Tree Levels ....... %ld\n",(unsigned long)stats->bt_levels);
+		printf("Internal Pages .... %ld\n",(unsigned long)stats->bt_int_pg);
+		printf("Leaf Pages ........ %ld\n",(unsigned long)stats->bt_leaf_pg);
+		printf("Duplicate Pages ... %ld\n",(unsigned long)stats->bt_dup_pg);
+		printf("Overflow Pages..... %ld\n",(unsigned long)stats->bt_over_pg);
+		printf("Empty Pages ....... %ld\n",(unsigned long)stats->bt_empty_pg);
+		printf("Pages on F/List ... %ld\n",(unsigned long)stats->bt_free);
+	}
+	
+	hash_stats(hash_used,"USED");
+	hash_stats(hash_dirty,"DIRTY");
+	btree_stats(hash_index,"- LFU -");
+
 }

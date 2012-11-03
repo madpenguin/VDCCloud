@@ -121,6 +121,8 @@ typedef struct cache_header {
 	uint64_t		size;
 	uint8_t			hcount;
 	struct in_addr	hosts[6];
+	uint8_t			open;
+	uint8_t			reindex;
 		
 } __attribute__ ((packed)) cache_header;
 
@@ -153,3 +155,24 @@ typedef struct cache_header {
 		syslog(LOG_ALERT,"Write error, slot=%d,err=%d",(int)slot,errno);	\
 		return False;														\
 	}
+
+#define READ_HEADER(cache,header)											\
+	if(lseek(cache,0,SEEK_SET)==-1) {										\
+		syslog(LOG_ALERT,"Read Header, seek failure, err=%d",errno);		\
+		return -1;															\
+	}																		\
+	if( read(cache,&header,sizeof(header)) != sizeof(header)) {				\
+		syslog(LOG_ALERT,"Failed to read cache header");					\
+		return -1;															\
+	} 	
+
+#define WRITE_HEADER(cache,header)											\
+		if(lseek(cache,0,SEEK_SET)==-1) {									\
+			syslog(LOG_ALERT,"Write Header, seek failure, err=%d",errno);	\
+			return -1;														\
+		}																	\
+		if( write(cache,&header,sizeof(header)) != sizeof(header)) {		\
+			syslog(LOG_ALERT,"Failed to write cache header");				\
+			return -1;														\
+		} 			
+
