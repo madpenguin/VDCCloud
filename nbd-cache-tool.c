@@ -22,7 +22,7 @@
 
 void* cacheRead(uint64_t);
 
-char *hosts[] = {"1.1.1.1","2.2.2.2",NULL};
+char *hosts[] = {"127.0.0.1","127.0.0.1",NULL};
 
 void main(int argc,char **argv)
 {
@@ -33,6 +33,8 @@ void main(int argc,char **argv)
 	long block = -1;
 	int host=0;
 	char data_block[1024];
+	char buf[1024];
+	int i;
  	
 	status = cacheOpen(dev,hosts);
 	if(status == -1) {
@@ -64,6 +66,7 @@ void main(int argc,char **argv)
 				break;
 			case 'f':
 				cacheFormat(hosts);
+				exit(0);
 				status = 0;
 				break;
 			case 'w':

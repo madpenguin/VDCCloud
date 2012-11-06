@@ -5,7 +5,9 @@
  *	Advances caching model for NBD client / RAID module.
  *	Impelemts LFU model using BDB / secondary index.
  *
- *
+ *  TODO :: Fix trim, it's not working
+ *  TODO :: Fix to work with block size > 1024
+ *  TODO :: seek seems to be causing a major slowdown - remove!
  *	
  */
 
@@ -40,7 +42,7 @@ const char *byte_to_binary(int);
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-uint64_t	cache_blocks;	// cache size (raw 512 blocks)
+//uint64_t	cache_blocks;	// cache size (raw 512 blocks)
 uint64_t	cache_entries;	// entries in cache
 uint64_t	data_offset;	// start of actual data
 uint32_t*	freeq;			// freeq for free blocks
@@ -54,6 +56,46 @@ DB*			hash_index;		// index for hash_used (on "usecount")
 DBT 		key,val;		//
 
 cache_header header;
+
+	struct {
+		
+		char*		name;
+		uint64_t	size;
+		uint64_t	ssize;
+		
+	} cache_device;
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+//	cacheTRIM	- issue an SSD TRIM request
+//
+///////////////////////////////////////////////////////////////////////////////	
+
+void cacheTRIM(uint64_t block)
+{
+	uint64_t	range[2],end;
+	
+	range[0] = data_offset+block*NCACHE_BSIZE;
+	range[1] = range[0]+NCACHE_BSIZE;
+
+	//printf("Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
+	
+	range[0] = (range[0] + cache_device.ssize - 1) & ~(cache_device.ssize - 1);
+	range[1] &= ~(cache_device.ssize - 1);
+
+	//printf("Aligned Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
+	
+	/* is the range end behind the end of the device ?*/
+	end = range[0] + range[1];
+	if(end < range[0] || end > cache_device.size) range[1] = cache_device.size - range[0];
+	
+	if( ioctl(cache,BLKDISCARD, &range) == -1 ) {
+		syslog(LOG_ALERT,"Trim Failure on block %lld",(unsigned long long)block);
+		return;
+	}
+//	syslog(LOG_INFO,"TRIM block %lld\n",(unsigned long long)block);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -81,11 +123,7 @@ int cacheOpen(char* dev,char** hosts)
 	//
 	uint32_t cacheHashFn(DB *db,const void *bytes, uint32_t length)
 	{
-		uint64_t block;
-		uint32_t ret;
-		memcpy(&block,bytes,sizeof(block));
-		ret=block;
-		return ret;
+		return (uint32_t)*(uint64_t*)bytes;
 	}
 	//
 	//	cacheInitDB - initialise a HASH DB
@@ -100,11 +138,15 @@ int cacheOpen(char* dev,char** hosts)
 			return False;
 		}
 		d=*db;
-		d->set_h_hash(d,cacheHashFn);		
+		d->set_h_hash(d,cacheHashFn);
+		d->set_cachesize(d,0,cache_device.size*CACHE_FACTOR,0);
+		d->set_h_nelem(d,cache_entries);
+		d->set_pagesize(d,512);
 		if( ret = d->open(d, NULL, NULL, NULL, DB_HASH , DB_CREATE, 0777) != 0) {
 			syslog(LOG_ALERT,"Unable to open memory DB, err=%d",errno);	
 			return False;
 		}
+		syslog(LOG_INFO,"Allocated %.2fM to BDB Hash",cache_device.size*CACHE_FACTOR/1024/1024);
 		return True;
 	}
 	//
@@ -128,30 +170,35 @@ int cacheOpen(char* dev,char** hosts)
 		return True;
 	}
 	//
-	key.flags = 0;	// make sure flags are null'd
-	val.flags = 0;
+	memset(&key,0,sizeof(key));
+	memset(&val,0,sizeof(val));
 	//	
 	cache = open(dev,O_RDWR|O_EXCL);
 	if( cache == -1 ) {
 		syslog(LOG_ALERT,"Unable to open Cache (%s), err=%d",dev,errno);
 		return -1;
 	}
-	if(ioctl(cache, BLKGETSIZE, &cache_blocks)) {
-		syslog(LOG_ALERT,"Unable to read cache size, err=%d\n",errno);
+	if(ioctl(cache,BLKGETSIZE64,&cache_device.size)==-1) {
+		syslog(LOG_ALERT,"Error reading cache device size, err=%d",errno);
 		return -1;
 	}
-	READ_HEADER(cache,header);
-	//
-	cache_entries 	= (cache_blocks-1)*512 / (1024+2*sizeof(cache_entry));
+	if(ioctl(cache,BLKSSZGET,&cache_device.ssize)==-1) {
+		syslog(LOG_ALERT,"Error reading cache sector size, err=%d",errno);
+		return -1;
+	}
+	cache_entries 	= (cache_device.size-NCACHE_HSIZE) / (NCACHE_BSIZE+2*sizeof(cache_entry));
 	data_offset 	= NCACHE_HSIZE+cache_entries*sizeof(cache_entry);
+	READ_HEADER(cache,header);
+	
+	//cacheTRIM(4);
 	//
 	if( !cacheInitDB(&hash_used) || !cacheInitDB(&hash_dirty) || !cacheInitIndex(&hash_index) ){
 		return -1;
 	}
-	if(hash_used->associate(hash_used,NULL,hash_index,cacheIndexKey,0)) {
-		syslog(LOG_ALERT,"Failed to create Index DB");
-		return -1;
-	}
+	//if(hash_used->associate(hash_used,NULL,hash_index,cacheIndexKey,0)) {
+	//	syslog(LOG_ALERT,"Failed to create Index DB");
+	//	return -1;
+	//}
 	//
 	if(memcmp(&header.magic,CACHE_MAGIC,sizeof(header.magic))) {
 		syslog(LOG_ERR,"Bad Magic in Cache header - reformat this device");
@@ -161,7 +208,7 @@ int cacheOpen(char* dev,char** hosts)
 	freeq = (uint32_t*)malloc(sizeof(uint32_t)*cache_entries);
 	freeq_next = freeq;
 	//		
-	syslog(LOG_INFO,"Opening (%s), size (%lldM), entries (%ld)",dev,(unsigned long long)cache_blocks*512/1024/1024,(unsigned long)cache_entries);
+	syslog(LOG_INFO,"Opening (%s), size (%lldM), entries (%ld)",dev,(unsigned long long)cache_device.size/1024/1024,(unsigned long)cache_entries);
 	//
 	int i=0;
 	DIRTY=1;
@@ -242,7 +289,7 @@ int cacheSave()
 		return False;
 	} 
 	syslog(LOG_INFO,"Cache save :: %d used, %d dirty, data=%dM, meta=%dM",
-		   used,dirty,(int)(cache_blocks*512/1024/1024),bytes/1024/1024);
+		   used,dirty,(int)(cache_device.size/1024/1024),bytes/1024/1024);
 	
 	return True;
 }
@@ -255,23 +302,18 @@ int cacheSave()
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-void cacheClose(char* dev)
+int cacheClose(char* dev)
 {
-	cacheSave();
-	hash_used->close(hash_used,0);
-	hash_dirty->close(hash_dirty,0);
-	free(freeq);
-	syslog(LOG_INFO,"Cache (%s) closed",dev);
-	
-	header.open = 0;
-	if(lseek(cache,0,SEEK_SET)!=-1) {
-		if( write(cache,&header,sizeof(header)) != sizeof(header)) {
-			syslog(LOG_ALERT,"Failed to write cache header");
-		}
-	} else
-		syslog(LOG_ALERT,"Unable to seek to the beginning of the cache");
-
-	close(cache);
+	if(header.open) {	
+		cacheSave();
+		hash_used->close(hash_used,0);
+		hash_dirty->close(hash_dirty,0);
+		free(freeq);
+		syslog(LOG_INFO,"Cache (%s) closed",dev);
+		header.open = 0;
+		WRITE_HEADER(cache,header);	
+		close(cache);
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -283,24 +325,32 @@ void cacheClose(char* dev)
 int cacheFormat(char** hosts)
 {
 	char			buffer[NCACHE_CSIZE];
-	uint64_t 		left_to_write = cache_blocks * 512;
+	uint64_t 		left_to_write = cache_device.size;
 	int				cycles = left_to_write / NCACHE_CSIZE;
 	int 			increment = cycles / 40;
 	uint64_t 		block;
 	int 			count,i,size;
+	
+	
 	
 	if(lseek(cache,0,SEEK_SET)==-1) {		
 		syslog(LOG_ALERT,"Seek error, err=%d",errno);	
 		return False;					
 	}
 	memset(&buffer,0,sizeof(buffer));
-	printf("Formatting Cache Device (%lldM)\n",(unsigned long long)(cache_blocks*512/1024/1024));
+	printf("Formatting Cache Device (%lldM)\n",(unsigned long long)(cache_device.size/1024/1024));
 	printf("["); for(i=0;i<40;i++) printf(" "); printf("]\r\%c[C",27);
 	
+	//for(block=0;block<max_blocks;block++) cacheTRIM(block);	
+	
+	//goto skip;	
+	
 	count=0;
+	block=0;
 	while( left_to_write > 0 )
 	{
 		size = left_to_write > NCACHE_CSIZE?NCACHE_CSIZE:left_to_write;
+		cacheTRIM(block++);
 		if( write(cache,buffer,size) != size) {
 			printf("\nWrite Error, errno=%d\n",errno);
 			exit(1);
@@ -314,27 +364,36 @@ int cacheFormat(char** hosts)
 	}
 	printf("\nFlushing...\n");
 	fflush(stdout);
+	
+//skip:	
 	//
 	//	Write cache header
 	//
-	if(lseek(cache,0,SEEK_SET)==-1) {		
-		syslog(LOG_ALERT,"Seek error, err=%d",errno);	
-		return False;					
-	}
-	memcpy(&header.magic,CACHE_MAGIC,sizeof(header.magic));
-	header.size = cache_blocks;
-	
+	//if(lseek(cache,0,SEEK_SET)==-1) {		
+	//	syslog(LOG_ALERT,"Seek error, err=%d",errno);	
+	//	return False;					
+	//}
 	i=0;
 	while( hosts[i] && i<sizeof(header.hosts) ) {
 		inet_aton(hosts[i],&header.hosts[i]);
 		i++;
 	}
+	memcpy(&header.magic,CACHE_MAGIC,sizeof(header.magic));
 	header.hcount = i;
-	if( write(cache,&header,NCACHE_HSIZE) != NCACHE_HSIZE) {
-		syslog(LOG_ALERT,"Write error, err=%d",errno);	
-		return False;					
-	}
+	header.size = NCACHE_BSIZE;
+
+	WRITE_HEADER(cache,header);
 	syslog(LOG_INFO,"Cache initialised, ready for %d entries\n",(int)cache_entries);
+	
+	printf("Header Information:\n");
+	printf("Magic ... "); for(i=0;i<sizeof(header.magic);i++) printf("%c",header.magic[i]); printf("\n");
+	printf("Size .... %lldM\n",(unsigned long long)header.size/1024/1024*512);
+	printf("Hosts ... %d\n",header.hcount);
+	printf("Open .... %d\n",header.open);
+	printf("ReIndex . %d\n",header.reindex);
+	for(i=0;i<header.hcount;i++) {
+		printf(  "Host %i - %s\n",i,inet_ntoa(header.hosts[i]));
+	}
 	return True;
 }
 
@@ -427,7 +486,11 @@ void* cacheRead(uint64_t block)
 	}
 	entry = (hash_entry*)(val.data);
 	//
-	SEEK_BLOCK(entry->slot,"READ");
+	uint64_t offset = data_offset + entry->slot*NCACHE_ESIZE;
+	if(lseek(cache,offset,SEEK_SET)==-1) {		\
+		syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)entry->slot,errno);	\
+		return False;													\
+	}
 	READ_BLOCK(entry->slot,buffer);
 	
 	entry->usecount++;
@@ -461,6 +524,10 @@ int cacheWrite(uint64_t block, void* data)
 		db = hash_dirty;
 		ret = db->get(db,NULL,&key,&val,0);
 		if( ret != 0) {
+			if(freeq_next == freeq) {
+				syslog(LOG_ALERT,"Used all available cache, please implement FLUSH!");
+				return False;
+			}
 			entry = &new_entry;
 			entry->slot 	= *--freeq_next;
 			entry->block 	= block;
@@ -471,7 +538,8 @@ int cacheWrite(uint64_t block, void* data)
 	}
 	if(!entry) entry = (hash_entry*)val.data;
 	entry->usecount++;
-	entry->dirty = DIRTY;	
+	entry->dirty = DIRTY;
+
 	if( db != hash_dirty ) {
 		db->del(db,NULL,&key,0);
 	}
@@ -485,8 +553,12 @@ int cacheWrite(uint64_t block, void* data)
 	index->usecount = entry->usecount;
 	memcpy(buffer+sizeof(cache_entry),data,NCACHE_BSIZE);
 	//
-	SEEK_BLOCK(entry->slot,"WRITE");
-	WRITE_BLOCK(entry->slot,buffer);
+	//uint64_t offset = data_offset + entry->slot*NCACHE_ESIZE;
+	//if(lseek(cache,offset,SEEK_SET)==-1) {		\
+	//	syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)entry->slot,errno);	\
+	//	return False;													\
+	//}
+	//WRITE_BLOCK(entry->slot,buffer);
 	return True;
 }
 
@@ -515,7 +587,7 @@ int cacheList()
 		printf("+----------+----------+----+--------+\n");	
 		while( ret == 0 ) {
 				entry = (hash_entry*)(val.data);
-		printf("| %8lld | %8lld | %2d | %6d |\n",
+				printf("| %8lld | %8lld | %2d | %6d |\n",
 				   (unsigned long long)entry->slot,
 				   (unsigned long long)entry->block,
 				   entry->dirty, entry->usecount);
@@ -525,6 +597,7 @@ int cacheList()
 		printf("+----------+----------+----+--------+\n");	
 		return True;
 	}
+	syslog(LOG_INFO,"CACHE LISTING");
 	return cacheListHash(hash_index,"Used") && cacheListHash(hash_dirty,"Dirty");	
 }
 
@@ -600,7 +673,7 @@ int cacheReIndex()
 	
 	SEEK_BLOCK(0,"REBUILD");
 
-	printf("Rebuilding Index for Cache Device (%lldM)\n",(unsigned long long)(cache_blocks*512/1024/1024));
+	printf("Rebuilding Index for Cache Device (%lldM)\n",(unsigned long long)(cache_device.size/1024/1024));
 	printf("["); for(i=0;i<40;i++) printf(" "); printf("]\r\%c[C",27);
 	
 	count=0;
@@ -619,7 +692,7 @@ int cacheReIndex()
 			*freeq_next++ = slot++;
 			continue;
 		}	
-		syslog(LOG_INFO,"Slot=%ld, Block=%lld, Dirty=%d, Use=%ld",(unsigned long)slot,(unsigned long long)index->block,index->dirty,(unsigned long)index->usecount);
+		//syslog(LOG_INFO,"Slot=%ld, Block=%lld, Dirty=%d, Use=%ld",(unsigned long)slot,(unsigned long long)index->block,index->dirty,(unsigned long)index->usecount);
 
 		switch(index->dirty) {
 			case USED:

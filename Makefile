@@ -1,4 +1,7 @@
-all:	nbd nbd-server nbd-cache-tool
+all:	nbd2 nbd-server nbd-cache-tool 
+
+nbd2: nbd2.c nbd.h util.c nbd-cache.c
+	@gcc -g -pg -O2 -D_GNU_SOURCE nbd2.c util.c nbd-cache.c -o nbd2 -ldb
 
 nbd: nbd.c nbd.h util.c
 	@gcc -O2 -D_GNU_SOURCE nbd.c util.c -g -o nbd

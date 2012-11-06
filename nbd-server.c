@@ -331,6 +331,7 @@ int doNegotiate(int sock)
 	
 	int64_t size = 0;
 	ioctl(db, BLKGETSIZE, &size);
+	syslog(LOG_INFO,"Device Size = %lld\n",(unsigned long long)size);
 	size = htonll(size*512);
 	int16_t small = htons(1);
 	char zeros[124];
@@ -384,7 +385,7 @@ void doSession(int sock)
 					if(lseek(db,off,SEEK_SET)==-1) running = doError("SEEK");
 					while( len > 0 ) {
 						readlen = len > sizeof(buffer)?sizeof(buffer):len;
-						syslog(LOG_ERR,"READ: %d, %lld %ld",db,(unsigned long long)off,(unsigned long) len);
+						//syslog(LOG_ERR,"READ: %d, %lld %ld",db,(unsigned long long)off,(unsigned long) len);
 						bytes = read(db,&buffer,readlen);
 						if( bytes != readlen ) running = doError("READ");
 						else putBytes(sock,&buffer,readlen);

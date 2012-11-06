@@ -126,13 +126,23 @@ typedef struct cache_header {
 		
 } __attribute__ ((packed)) cache_header;
 
+
+struct thread_info {    /* Used as argument to thread_start() */
+           pthread_t thread_id;        /* ID returned by pthread_create() */
+           int       thread_num;       /* Application-defined thread # */
+           char*	host;
+		   char*	name;
+       };
+
+
 #define NCACHE_HSIZE 512
 #define NCACHE_CSIZE 32768
-#define NCACHE_BSIZE 1024
+#define NCACHE_BSIZE 4096
 #define NCACHE_ESIZE (NCACHE_BSIZE + sizeof(cache_entry))
+#define CACHE_FACTOR 0.02
 
 #define	SEEK_BLOCK(slot,label)	\
-	syslog(LOG_INFO,"SEEK slot [%d] for [%s] @ %llx",(int)slot,label,(unsigned long long)(cache,data_offset + slot*NCACHE_ESIZE));			\
+	//syslog(LOG_INFO,"SEEK slot [%d] for [%s] @ %llx",(int)slot,label,(unsigned long long)(cache,data_offset + slot*NCACHE_ESIZE));			\
 	if(lseek(cache,data_offset + slot*NCACHE_ESIZE,SEEK_SET)==-1) {		\
 		syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)slot,errno);	\
 		return False;													\
@@ -176,3 +186,5 @@ typedef struct cache_header {
 			return -1;														\
 		} 			
 
+uint64_t ntohll(uint64_t);
+void* cacheRead(uint64_t);
