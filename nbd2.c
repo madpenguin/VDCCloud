@@ -635,7 +635,7 @@ void doSession(int sock)
 	struct nbd_request request;
 	struct nbd_reply reply;
 	char buffer[NCACHE_BSIZE];
-	//int readlen,
+	int readlen;
 	int bytes;
 	int running = True;
 	char *bufp;
@@ -682,35 +682,50 @@ void doSession(int sock)
 			switch(cmd) {
 				case NBD_READ:
 					putBytes(sock,&reply,sizeof(reply));
-					while( len > 0 ) {
-						bufp = (char*)cacheRead(block);
-						if(!bufp) {
+					bufp = (char*)cacheRead(off,len);
+					if(!bufp) 	running = doError("READ");
+					else 		putBytes(sock,bufp,len);
+					break;
+				
+					//while( len > 0 ) {
+					//	bufp = (char*)cacheRead(block);
+					//	if(!bufp) {
 							//if(lseek(h1,off,SEEK_SET)==-1) running = doError("SEEK");							
 							//bytes = read(h1,&buffer,readlen);
 							//if( bytes != readlen ) {
 							//	running = doError("READ");
 							//	break;
 							//}
-							memset(&buffer,0,sizeof(buffer));
-							if(!cacheWrite(block,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
-							bufp = buffer;
-						}
-						putBytes(sock,bufp,NCACHE_BSIZE);
-                        len -= NCACHE_BSIZE;
-                        block++;
+					//		memset(&buffer,0,sizeof(buffer));
+					//		if(!cacheWrite(block,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
+					//		bufp = buffer;
+					//	}
+					//	putBytes(sock,bufp,NCACHE_BSIZE);
+                    //   len -= NCACHE_BSIZE;
+                    //    block++;
                         //h3 = h1;
                         //h1 = h2;
                         //h2 = h3;
-					}
-				break;
+					//}
+					//break;
                 
 			case NBD_WRITE:
 				while( len > 0 ) {
-				    getBytes(sock,&buffer,NCACHE_BSIZE);
-					if(!cacheWrite(block,&buffer))
-						syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
-					len -= NCACHE_BSIZE;
-					block++;
+					readlen = len > sizeof(buffer)?sizeof(buffer):len;
+					getBytes(sock,&buffer,readlen);
+					if(!cacheWrite(off,len,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
+					off += readlen;
+					len -= readlen;
+				}
+				putBytes(sock,&reply,sizeof(reply));
+				break;
+
+				//while( len > 0 ) {
+				 //   getBytes(sock,&buffer,NCACHE_BSIZE);
+				//	if(!cacheWrite(block,&buffer))
+				//		syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
+				//	len -= NCACHE_BSIZE;
+				//	block++;
 					//readlen = len > sizeof(buffer)?sizeof(buffer):len;
 					//if(lseek(h1,off,SEEK_SET)==-1) running = doError("SEEK");
 					//if(lseek(h2,off,SEEK_SET)==-1) running = doError("SEEK");
@@ -728,9 +743,9 @@ void doSession(int sock)
 						//bufp += 1024;
 						//left -= 1024;
 					//}
-				}
-				putBytes(sock,&reply,sizeof(reply));
-				break;
+				//	}
+					//putBytes(sock,&reply,sizeof(reply));
+					//break;
             
 			case NBD_CLOSE:
 				//putBytes(&reply,sizeof(reply));

@@ -55,6 +55,9 @@ DB*			hash_dirty;		// hash table for dirty blocks
 DB*			hash_index;		// index for hash_used (on "usecount")
 DBT 		key,val;		//
 
+uint64_t	cache_ptr;		// current SEEK pointer for cache
+uint64_t	cache_tmp;		// 
+
 cache_header header;
 
 	struct {
@@ -72,29 +75,28 @@ cache_header header;
 //
 ///////////////////////////////////////////////////////////////////////////////	
 
-void cacheTRIM(uint64_t block)
+void cacheTRIM(uint64_t start,uint64_t count)
 {
 	uint64_t	range[2],end;
 	
-	range[0] = data_offset+block*NCACHE_BSIZE;
-	range[1] = range[0]+NCACHE_BSIZE;
+	range[0] = data_offset+start; //block*NCACHE_BSIZE;
+	range[1] = range[0]+(NCACHE_BSIZE * count);
 
-	//printf("Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
+	printf("TRIM1 Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
 	
 	range[0] = (range[0] + cache_device.ssize - 1) & ~(cache_device.ssize - 1);
 	range[1] &= ~(cache_device.ssize - 1);
 
-	//printf("Aligned Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
+	printf("TRIM2 Start=%lld,End=%lld\n",(unsigned long long)range[0],(unsigned long long)range[1]);
 	
 	/* is the range end behind the end of the device ?*/
 	end = range[0] + range[1];
 	if(end < range[0] || end > cache_device.size) range[1] = cache_device.size - range[0];
 	
 	if( ioctl(cache,BLKDISCARD, &range) == -1 ) {
-		syslog(LOG_ALERT,"Trim Failure on block %lld",(unsigned long long)block);
+		syslog(LOG_ALERT,"TRIM FAILED! [%d]",errno);
 		return;
 	}
-//	syslog(LOG_INFO,"TRIM block %lld\n",(unsigned long long)block);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -178,6 +180,7 @@ int cacheOpen(char* dev,char** hosts)
 		syslog(LOG_ALERT,"Unable to open Cache (%s), err=%d",dev,errno);
 		return -1;
 	}
+	cache_ptr = -1;
 	if(ioctl(cache,BLKGETSIZE64,&cache_device.size)==-1) {
 		syslog(LOG_ALERT,"Error reading cache device size, err=%d",errno);
 		return -1;
@@ -190,8 +193,6 @@ int cacheOpen(char* dev,char** hosts)
 	data_offset 	= NCACHE_HSIZE+cache_entries*sizeof(cache_entry);
 	READ_HEADER(cache,header);
 	
-	//cacheTRIM(4);
-	//
 	if( !cacheInitDB(&hash_used) || !cacheInitDB(&hash_dirty) || !cacheInitIndex(&hash_index) ){
 		return -1;
 	}
@@ -259,6 +260,7 @@ int cacheSave()
 		ret = cursor->c_get(cursor,&key,&val,DB_FIRST);
 		while( ret == 0 ) {
 			entry			= (hash_entry*)(val.data);
+			//syslog(LOG_INFO,"Slot=%d",entry->slot);			
 			ptr				= base + entry->slot;		
 			ptr->dirty 		= entry->dirty;
 			ptr->block 		= entry->block;
@@ -350,7 +352,7 @@ int cacheFormat(char** hosts)
 	while( left_to_write > 0 )
 	{
 		size = left_to_write > NCACHE_CSIZE?NCACHE_CSIZE:left_to_write;
-		cacheTRIM(block++);
+		//cacheTRIM(block++);
 		if( write(cache,buffer,size) != size) {
 			printf("\nWrite Error, errno=%d\n",errno);
 			exit(1);
@@ -422,6 +424,7 @@ int cacheLoad()
 		syslog(LOG_ALERT,"Cache header is wrong size!");
 		return False;
 	}
+	hallocLoad(ptr,cache_entries);
 	for(slot=0;slot<cache_entries;slot++) {
 		if(!ptr->dirty) {
 			*freeq_next++ = slot;
@@ -467,37 +470,33 @@ int cacheLoad()
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-void* cacheRead(uint64_t block)
+void* cacheRead(uint64_t off,int len)
 {
+	static char buffer[NCACHE_ESIZE];
 	int ret;
 	hash_entry* entry;
-	static char buffer[NCACHE_ESIZE];
-	DB* db;
+	uint64_t block = off/NCACHE_BSIZE;
+	DB* db = hash_used;
 	
 	key.data = &block;
 	key.size = sizeof(block);
 	
-	ret = hash_used->get(hash_used,NULL,&key,&val,0);
-	if( ret==0 ) db=hash_used;
-	else {
-		ret = hash_dirty->get(hash_dirty,NULL,&key,&val,0);
-		if( ret==0 ) db=hash_dirty;
-		else return NULL;
+	ret = db->get(hash_used,NULL,&key,&val,0);
+	if( ret != 0 ) {
+		db = hash_dirty;
+		ret = db->get(hash_dirty,NULL,&key,&val,0);
+		if( ret != 0 ) {
+			syslog(LOG_ALERT,"Block not in cache");
+			return NULL;
+		}
 	}
 	entry = (hash_entry*)(val.data);
-	//
-	uint64_t offset = data_offset + entry->slot*NCACHE_ESIZE;
-	if(lseek(cache,offset,SEEK_SET)==-1) {		\
-		syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)entry->slot,errno);	\
-		return False;													\
-	}
-	READ_BLOCK(entry->slot,buffer);
-	
 	entry->usecount++;
-	if( db->put(db,NULL,&key,&val,0) !=0) {
-		syslog(LOG_ALERT,"Error updating USE count");
-		return False;
-	}
+	
+	DATA_SEEK(entry->slot,"READ");
+	READ_BLOCK(entry->slot,buffer);
+	SAVE_CACHE(db);
+	
 	return (buffer+sizeof(cache_entry));
 }
 
@@ -507,51 +506,128 @@ void* cacheRead(uint64_t block)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-int cacheWrite(uint64_t block, void* data)
-{
-	hash_entry* entry = NULL;
-	hash_entry new_entry;
-	char buffer[NCACHE_ESIZE];
-	cache_entry *index = (cache_entry*)buffer;
-	DB* db = hash_used;
-	int ret;
-	
-	key.data = &block;
-	key.size = sizeof(block);
-	
-	ret = db->get(db,NULL,&key,&val,0);
-	if( ret != 0 ) {
-		db = hash_dirty;
-		ret = db->get(db,NULL,&key,&val,0);
-		if( ret != 0) {
-			if(freeq_next == freeq) {
-				syslog(LOG_ALERT,"Used all available cache, please implement FLUSH!");
-				return False;
-			}
-			entry = &new_entry;
-			entry->slot 	= *--freeq_next;
-			entry->block 	= block;
-			entry->usecount	= 0;
-			val.data = entry;
-			val.size = sizeof(hash_entry);		
-		}
-	}
-	if(!entry) entry = (hash_entry*)val.data;
-	entry->usecount++;
-	entry->dirty = DIRTY;
+int gcount=150;
 
-	if( db != hash_dirty ) {
-		db->del(db,NULL,&key,0);
+void allocateFree(uint64_t *slot,int *count)
+{
+	syslog(LOG_INFO,"alloc :: request for %d",*count);
+	*slot = gcount++;
+	*count = 1;
+}
+
+void cacheAlignBlock(int *len)
+{
+	int size = (*len/NCACHE_BSIZE)*NCACHE_BSIZE;
+	if( size != *len ) *len = size + NCACHE_BSIZE;
+}
+
+int cacheWrite(uint64_t off, int len, void* data)
+{
+	hash_entry 		new_entry,*entry;
+	char*			buffer,*ptr;
+	DB* 			db;
+	int				count,ret,siz;
+	cache_entry		*iptr;
+	uint64_t		block = off/NCACHE_BSIZE;
+	uint32_t		slot;
+
+	cacheAlignBlock(&len);	
+			
+	syslog(LOG_INFO,"cacheWrite :: off=%lld, len=%d, data=%llx",(unsigned long long)off,len,(unsigned long long)data);
+	
+	hallocBegin();
+	while( len > 0) {
+		count = len/NCACHE_BSIZE;
+		//allocateFree(&slot,&count);
+		hallocAllocate(&slot,&count);
+		ptr = buffer = (char*)malloc(count*NCACHE_ESIZE);
+		len -= count*NCACHE_BSIZE;
+		
+		DATA_SEEK(slot,"WRITE");
+		while(count--) {
+			syslog(LOG_INFO,"Loop on slot %d, block %lld",(int)slot,(unsigned long long)block);
+			db = hash_used;
+			key.data = &block;
+			key.size = sizeof(block);		
+			ret = db->get(db,NULL,&key,&val,0);
+			if( ret != 0 ) {
+				db = hash_dirty;
+				ret = db->get(db,NULL,&key,&val,0);
+			}
+			if(ret == 0) {	
+				if( db != hash_dirty ) {
+					db->del(db,NULL,&key,0);
+				}
+				// Free old slot !
+				entry = (hash_entry*)val.data;
+				syslog(LOG_INFO,"Need to free slot (%d)",entry->slot);
+				hallocFree(entry->slot);
+			} else {
+				entry = &new_entry;
+				entry->block 	= block;
+				entry->usecount = 0;
+				val.data 		= entry;
+				val.size 		= sizeof(new_entry);
+			}
+			entry->slot  = slot;			
+			entry->dirty = DIRTY;
+			entry->usecount++;
+			SAVE_CACHE(hash_dirty);
+			
+			iptr = (cache_entry*)ptr;
+			iptr->block 	= block;
+			iptr->dirty 	= DIRTY;
+			iptr->usecount	= entry->usecount;
+			ptr += sizeof(cache_entry);
+			memcpy(ptr,data,NCACHE_BSIZE);
+			ptr  += NCACHE_BSIZE;
+			data += NCACHE_BSIZE;
+			block++;
+			slot++;
+		}
+		DATA_SAVE(buffer,ptr-buffer);
+		free(buffer);
 	}
-	if( hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
-		syslog(LOG_ALERT,"Unable to insert entry into HASH");
-		return False;
-	}
+	hallocEnd();
+	return True;
+}
+
+//	key.data = &block;
+//	key.size = sizeof(block);
+	
+//	ret = db->get(db,NULL,&key,&val,0);
+//	if( ret != 0 ) {
+//		db = hash_dirty;
+//		ret = db->get(db,NULL,&key,&val,0);
+//		if( ret != 0) {
+//			if(freeq_next == freeq) {
+//				syslog(LOG_ALERT,"Used all available cache, please implement FLUSH!");
+//				return False;
+//			}
+//			entry = &new_entry;
+//			entry->slot 	= *--freeq_next;
+//			entry->block 	= block;
+//			entry->usecount	= 0;
+//			val.data = entry;
+//			val.size = sizeof(hash_entry);		
+//		}
+//	}
+//	if(!entry) entry = (hash_entry*)val.data;
+//	entry->usecount++;
+//	entry->dirty = DIRTY;
+
+//	if( db != hash_dirty ) {
+//		db->del(db,NULL,&key,0);
+//	}
+//	if( hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
+//		syslog(LOG_ALERT,"Unable to insert entry into HASH");
+//		return False;
+//	}
 	//
-	index->block = block;
-	index->dirty = DIRTY;
-	index->usecount = entry->usecount;
-	memcpy(buffer+sizeof(cache_entry),data,NCACHE_BSIZE);
+//	index->block = block;
+//	index->dirty = DIRTY;
+//	index->usecount = entry->usecount;
+//	memcpy(buffer+sizeof(cache_entry),data,NCACHE_BSIZE);
 	//
 	//uint64_t offset = data_offset + entry->slot*NCACHE_ESIZE;
 	//if(lseek(cache,offset,SEEK_SET)==-1) {		\
@@ -559,8 +635,22 @@ int cacheWrite(uint64_t block, void* data)
 	//	return False;													\
 	//}
 	//WRITE_BLOCK(entry->slot,buffer);
-	return True;
-}
+//	return True;
+//}
+
+		//SEEK_BLOCK(slot,"WRITE");
+		//WRITE_BLOCKS(data,count*NCACHE_BSIZE);
+		//len -= count * NCACHE_BSIZE;
+		//block = off/NCACHE_BSIZE;
+		//key.data = &block;
+		//key.size = sizeof(block);
+		//if( ret == 0) {		// block exists!
+		//	// add block to trim list
+		//	if( hash_dirty->put(hash_dirty,NULL,&key,&val,0) !=0) {
+		//		syslog(LOG_ALERT,"Unable to insert entry into HASH");
+		//		return False;
+		//	}
+	
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -671,7 +761,7 @@ int cacheReIndex()
 	DB*				db;
 	int				used = 0,dirty = 0;
 	
-	SEEK_BLOCK(0,"REBUILD");
+	DATA_SEEK(0,"REBUILD");
 
 	printf("Rebuilding Index for Cache Device (%lldM)\n",(unsigned long long)(cache_device.size/1024/1024));
 	printf("["); for(i=0;i<40;i++) printf(" "); printf("]\r\%c[C",27);
@@ -692,7 +782,7 @@ int cacheReIndex()
 			*freeq_next++ = slot++;
 			continue;
 		}	
-		//syslog(LOG_INFO,"Slot=%ld, Block=%lld, Dirty=%d, Use=%ld",(unsigned long)slot,(unsigned long long)index->block,index->dirty,(unsigned long)index->usecount);
+		syslog(LOG_INFO,"Slot=%ld, Block=%lld, Dirty=%d, Use=%ld",(unsigned long)slot,(unsigned long long)index->block,index->dirty,(unsigned long)index->usecount);
 
 		switch(index->dirty) {
 			case USED:
@@ -774,27 +864,31 @@ int cacheExpire(int units)
 
 void cacheTest()
 {
-	int fd = open("/etc/passwd",O_RDONLY);
+	int fd = open("/etc/sensors3.conf",O_RDONLY);
 	if(fd<1) {
 		printf("Error opening file, err=%d\n",errno);
 		return;
 	}
 	
-	char buffer[NCACHE_BSIZE];
-	int block=1000;
-	int bytes;
+	char buffer[1024*1024];
+	int off,len,bytes,bytes2;
 	
-	do {
-		memset(buffer,0,sizeof(buffer));
-		bytes = read(fd,buffer,sizeof(buffer));
-		cacheWrite(block++,&buffer);
-	} while (bytes>0);
+	off=NCACHE_BSIZE*1000;
+	len=NCACHE_BSIZE*4;
+	
+	memset(buffer,0,sizeof(buffer));
+	bytes = read(fd,buffer,sizeof(buffer));
+	cacheWrite(off,bytes,&buffer);
 	
 	void* data;
-	
-	for(block=1000;block<1003;block++) {
-		data = cacheRead(block);
+	off=NCACHE_BSIZE*1000;
+	len=bytes;
+
+	while( len > 0) {
+		data = cacheRead(off,NCACHE_BSIZE);
 		printf("%s",(char*)data);
+		len -= NCACHE_BSIZE;
+		off += NCACHE_BSIZE;
 	}
 }
 

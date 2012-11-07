@@ -20,8 +20,6 @@
 
 #include "nbd.h"
 
-void* cacheRead(uint64_t);
-
 char *hosts[] = {"127.0.0.1","127.0.0.1",NULL};
 
 void main(int argc,char **argv)
@@ -29,10 +27,10 @@ void main(int argc,char **argv)
     int c,status;
 	void* data;
 	char *dev="/dev/cache/onegig";
-	char* options = "gxelfwrts:b:i";
+	char* options = "gxelfwrts:b:";
 	long block = -1;
 	int host=0;
-	char data_block[1024];
+	char data_block[4096];
 	char buf[1024];
 	int i;
  	
@@ -51,9 +49,6 @@ void main(int argc,char **argv)
 			case 'e':
 				cacheExpire(2);
 				break;
-			case 'i':
-				cacheReIndex();
-				break;
 			case 'b':
 				block = atol(optarg);
 				break;
@@ -71,14 +66,14 @@ void main(int argc,char **argv)
 				break;
 			case 'w':
 				if(block>0) {
-					if(!cacheWrite(block,&data_block)) printf("Write Error!\n");
+					if(!cacheWrite(block*NCACHE_BSIZE,sizeof(data_block),&data_block)) printf("Write Error!\n");
 					else printf("Ok\n");
 				}
 				else printf("Specify which block first!\n");
 				break;
 			case 'r':
 				if(block>0) {
-					data = cacheRead(block);
+					data = cacheRead(block*NCACHE_BSIZE,NCACHE_BSIZE);
 					if(!data) printf("Not found!\n");
 					else printf("Ok\n");
 				}

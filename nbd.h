@@ -126,7 +126,6 @@ typedef struct cache_header {
 		
 } __attribute__ ((packed)) cache_header;
 
-
 struct thread_info {    /* Used as argument to thread_start() */
            pthread_t thread_id;        /* ID returned by pthread_create() */
            int       thread_num;       /* Application-defined thread # */
@@ -141,6 +140,44 @@ struct thread_info {    /* Used as argument to thread_start() */
 #define NCACHE_ESIZE (NCACHE_BSIZE + sizeof(cache_entry))
 #define CACHE_FACTOR 0.02
 
+
+#define	DATA_SEEK(slot,label)																				\
+	cache_tmp = data_offset + (slot*NCACHE_ESIZE);															\
+	if(cache_tmp!=cache_ptr) {																				\
+		syslog(LOG_INFO,"SEEK :: slot [%d] for [%s] @ %llx",(int)slot,label,(unsigned long long)cache_tmp);	\
+		if(lseek(cache,cache_tmp,SEEK_SET)==-1) {															\
+			syslog(LOG_ALERT,"Seek error, slot=%d,err=%d",(int)slot,errno);									\
+			return False;																					\
+		}																									\
+		cache_ptr = cache_tmp;																				\
+	}
+
+#define DATA_SAVE(buffer,len)											\
+	syslog(LOG_INFO,"SAVE :: buffer=%llx,len=%d",(unsigned long long)buffer,(int)(len));			\
+	if( write(cache,buffer,len) != len) {								\
+		syslog(LOG_ALERT,"Write error, err=%d",errno);					\
+		return False;													\
+	}																	\
+	cache_ptr += len;
+
+#define SAVE_CACHE(db)													\
+	if( db->put(db,NULL,&key,&val,0) !=0) {								\
+		syslog(LOG_ALERT,"Error saving HASH key");						\
+		return False;													\
+	}
+
+#define READ_BLOCK(slot,buffer)	\
+	syslog(LOG_INFO,"READ :: slot=%d, buffer=%llx,len=%d",slot,(unsigned long long)buffer,4096);			\
+	if( read(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE ) {				\
+		syslog(LOG_ALERT,"Read error, slot=%d,err=%d",(int)slot,errno);	\
+		return False;													\
+	}																	\
+	cache_ptr += NCACHE_ESIZE;
+
+
+
+
+
 #define	SEEK_BLOCK(slot,label)	\
 	//syslog(LOG_INFO,"SEEK slot [%d] for [%s] @ %llx",(int)slot,label,(unsigned long long)(cache,data_offset + slot*NCACHE_ESIZE));			\
 	if(lseek(cache,data_offset + slot*NCACHE_ESIZE,SEEK_SET)==-1) {		\
@@ -148,11 +185,6 @@ struct thread_info {    /* Used as argument to thread_start() */
 		return False;													\
 	}
 
-#define READ_BLOCK(slot,buffer)	\
-	if( read(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE ) {				\
-		syslog(LOG_ALERT,"Read error, slot=%d,err=%d",(int)slot,errno);	\
-		return False;													\
-	}
 
 #define WRITE_BLOCK(slot,buffer)	\
 	if( write(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE) {				\
@@ -187,4 +219,4 @@ struct thread_info {    /* Used as argument to thread_start() */
 		} 			
 
 uint64_t ntohll(uint64_t);
-void* cacheRead(uint64_t);
+void* cacheRead(uint64_t,int);
