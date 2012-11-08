@@ -73,9 +73,9 @@ void main(int argc,char **argv)
 				break;
 			case 'r':
 				if(block>0) {
-					data = cacheRead(block*NCACHE_BSIZE,NCACHE_BSIZE);
-					if(!data) printf("Not found!\n");
-					else printf("Ok\n");
+					if(!cacheRead(block*NCACHE_BSIZE,data_block,sizeof(data_block)))
+							printf("Not found!\n");
+					else 	printf("Ok\n");
 				}
 				else printf("Specify which block first!\n");
 				break;

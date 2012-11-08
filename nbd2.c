@@ -40,9 +40,6 @@ int             debug;
 extern char*    optarg;
 int             running = True;
 int 			dbm;		// current database connection
-uint64_t 		off;		// offset of current transation
-uint32_t 		len;		// length of current transaction
-uint32_t 		cmd;		// command of current transaction
 int 			debug = 0;	// global debug flag
 char			pbuf[1024];	// print buffer
 char* 			cmds[]	= { "READ" , "WRITE" , "CLOSE" , "FLUSH" , "TRIM" };
@@ -91,8 +88,7 @@ int doError(char *text)
 {
 	char msg[256];
 	snprintf(msg,sizeof(msg),
-		 "error:%s dbm=%d off=%lld len=%lld errno=%d",
-		 text,dbm,(unsigned long long)off,(unsigned long long)len,errno);
+		 "error:%s dbm=%d rrno=%d",text,dbm,errno);
 	if(debug<2)
 		syslog(LOG_ERR,"%s",msg);
 	else	doLog(msg);	
@@ -557,7 +553,10 @@ int doNegotiate(int sock)
 					return False;
 				}
 				syslog(LOG_INFO,"%s :: Negotiated size=%lld",host2,(unsigned long long) size);
-
+	
+				close(sock1);
+				close(sock2);
+	
 
 /*			pthread_t thread1;
 			pthread_t thread2;
@@ -625,8 +624,20 @@ int doNegotiate(int sock)
     putBytes(sock,&small,sizeof(small));
     putBytes(sock,&zeros,sizeof(zeros));
     doLog("Exit NEGOTIATION [Ok]");
-    return True;
+	return True;
 }
+
+uint64_t computeChecksum(uint64_t *ptr,int len)
+{
+	uint64_t sum = 0;
+	
+	while(len>0) {
+		sum += *ptr++;
+		len -= sizeof(uint64_t);
+	}
+	return sum;
+}
+
 
 //	doSession - process a single client session
 
@@ -638,10 +649,16 @@ void doSession(int sock)
 	int readlen;
 	int bytes;
 	int running = True;
-	char *bufp;
+	char *bufp,*bufq;
 	int left;
 	uint64_t block;
 
+	uint64_t 		off;		// offset of current transation
+	uint32_t 		len;		// length of current transaction
+	uint32_t 		cmd;		// command of current transaction
+
+	int i;
+	
 	doLog("Enter SESSION");
 	
 	if( cacheOpen(dev,hosts) == -1) {
@@ -652,6 +669,8 @@ void doSession(int sock)
 	doConnectionMade(sock);
         
     int h1,h2,h3;
+	uint64_t sum1,sum2;
+	cache_entry *entry1,*entry2;	
         
 	if(doNegotiate(sock)) {
 	
@@ -663,7 +682,6 @@ void doSession(int sock)
             
 			getBytes(sock,&request,sizeof(request));
 			off = ntohll(request.from);
-			block = off/NCACHE_BSIZE;
 			cmd = ntohl(request.type) & NBD_CMD_MASK_COMMAND;
 			len = ntohl(request.len);
 			reply.magic = htonl(NBD_REPLY_MAGIC);
@@ -682,10 +700,38 @@ void doSession(int sock)
 			switch(cmd) {
 				case NBD_READ:
 					putBytes(sock,&reply,sizeof(reply));
-					bufp = (char*)cacheRead(off,len);
-					if(!bufp) 	running = doError("READ");
-					else 		putBytes(sock,bufp,len);
+					bufp = (char*)malloc(len);
+					if(!cacheRead(off,bufp,len)) syslog(LOG_ERR,"cacheRead error");
+					sum1 = computeChecksum((uint64_t*)bufp,len);
+					putBytes(sock,bufp,len);
+					
+					bufq = (char*)malloc(len);
+					if(!cacheVerify(off,bufq,len)) syslog(LOG_ERR,"cacheVerify error");
+					sum2 = computeChecksum((uint64_t*)bufq,len);
+				
+					if(sum1!=sum2) {
+						for(i=0;i<len;i++) if(bufp[i]!=bufq[i])break;
+						syslog(LOG_ALERT,"READ CHECKSUM BAD *** %lld, matching first %d of %d",
+							   (unsigned long long)off/NCACHE_BSIZE,i,len);
+					}
+					free(bufp); free(bufq);
 					break;
+					
+					//while( len > 0 ) {
+					//	block = off/NCACHE_BSIZE;
+					//	syslog(LOG_INFO,"NBD_READ block %lld",(unsigned long long)block);
+					//	readlen = len > sizeof(buffer)?sizeof(buffer):len;						
+					//	bufp = (char*)cacheRead(off,buffer,readlen);
+					//	if(!bufp) {
+					//		syslog(LOG_ERR,"No data for block %lld",(unsigned long long)block);
+					//		memset(buffer,0,sizeof(buffer));
+					//		bufp=buffer;
+					//	}
+					//	putBytes(sock,bufp,NCACHE_BSIZE);
+					//	len -= NCACHE_BSIZE;
+					//}
+					//break;
+	
 				
 					//while( len > 0 ) {
 					//	bufp = (char*)cacheRead(block);
@@ -710,15 +756,45 @@ void doSession(int sock)
 					//break;
                 
 			case NBD_WRITE:
-				while( len > 0 ) {
-					readlen = len > sizeof(buffer)?sizeof(buffer):len;
-					getBytes(sock,&buffer,readlen);
-					if(!cacheWrite(off,len,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
-					off += readlen;
-					len -= readlen;
-				}
+				bufp = (char*)malloc(len);
+				getBytes(sock,bufp,len);
+				
+				sum1 = computeChecksum((uint64_t*)bufp,len);
+				
+				cacheWrite(off,bufp,len);
 				putBytes(sock,&reply,sizeof(reply));
+				
+				bufq = (char*)malloc(len);
+				cacheVerify(off,bufq,len);
+				sum2 = computeChecksum((uint64_t*)bufq,len);
+				
+				if(sum1!=sum2) {
+						syslog(LOG_ALERT,"CHECKSUM BAD *** %lld",(unsigned long long)off/NCACHE_BSIZE);
+						entry1 = (cache_entry*)bufp;
+						entry2 = (cache_entry*)bufq;
+						syslog(LOG_INFO,"Block[%lld:%lld],UserCount[%d:%d],Dirty[%d:%d]",
+							   (unsigned long long)entry1->block,(unsigned long long)entry2->block,
+							   entry1->usecount,entry2->usecount,
+							   entry1->dirty,entry2->dirty);
+				}
+				//else	syslog(LOG_ALERT,"CHECKSUM OK  :: %lld",(unsigned long long)off/NCACHE_BSIZE);
+				
+				free(bufp); free(bufq);
 				break;
+			
+				//block = off/NCACHE_BSIZE;
+				//syslog(LOG_INFO,"NBD_WRITE, block=%lld,len=%ld",(unsigned long long)block,(unsigned long)len);
+				//while( len > 0 ) {
+				//	block = off/NCACHE_BSIZE;
+				//	readlen = len > sizeof(buffer)?sizeof(buffer):len;
+				//	readlen = NCACHE_BSIZE;
+				//	getBytes(sock,&buffer,readlen);
+				//	if(!cacheWrite(off,readlen,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
+				//	off += readlen;
+				//	len -= readlen;
+				//}
+				//putBytes(sock,&reply,sizeof(reply));
+				//break;
 
 				//while( len > 0 ) {
 				 //   getBytes(sock,&buffer,NCACHE_BSIZE);

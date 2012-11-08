@@ -1,4 +1,7 @@
-all:	nbd2 nbd-server nbd-cache-tool 
+all:	nbd2 nbd-server nbd-cache-tool halloc_test
+
+halloc_test: halloc_test.c nbd.h util.c nbd-cache.c nbd-freecache.c
+	@gcc -g -O2 -D_GNU_SOURCE halloc_test.c util.c nbd-cache.c nbd-freecache.c -o halloc_test -ldb
 
 nbd2: nbd2.c nbd.h util.c nbd-cache.c nbd-freecache.c
 	@gcc -g -pg -O2 -D_GNU_SOURCE nbd2.c util.c nbd-cache.c nbd-freecache.c -o nbd2 -ldb

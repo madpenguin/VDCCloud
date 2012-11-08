@@ -33,7 +33,6 @@
 
 #define FREE	0
 #define USED	1
-
 const char *byte_to_binary(int);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -59,6 +58,8 @@ uint64_t	cache_ptr;		// current SEEK pointer for cache
 uint64_t	cache_tmp;		// 
 
 cache_header header;
+
+int 		mirror;			// debug file
 
 	struct {
 		
@@ -180,6 +181,12 @@ int cacheOpen(char* dev,char** hosts)
 		syslog(LOG_ALERT,"Unable to open Cache (%s), err=%d",dev,errno);
 		return -1;
 	}
+	mirror = open("/dev/vols/blocks/test",O_RDWR|O_EXCL);
+	if( mirror == -1 ) {
+		syslog(LOG_ALERT,"Unable to open Mirror (%s), err=%d",dev,errno);
+		return -1;
+	}
+
 	cache_ptr = -1;
 	if(ioctl(cache,BLKGETSIZE64,&cache_device.size)==-1) {
 		syslog(LOG_ALERT,"Error reading cache device size, err=%d",errno);
@@ -231,7 +238,7 @@ int cacheOpen(char* dev,char** hosts)
 	}
 	//
 	if(header.open)
-			cacheReIndex();
+			{ cacheReIndex(); cacheClose(); exit(0); }
 	else	cacheLoad();
 	//
 	return 0;		
@@ -413,6 +420,8 @@ int cacheLoad()
 	int dirty=0;
 	DB* db;
 
+	syslog(LOG_INFO,"Cache Load");
+	
 	if(lseek(cache,NCACHE_HSIZE,SEEK_SET)==-1) {
 		syslog(LOG_ALERT,"Unable to seek BOF in cacheLoad");
 		return False;
@@ -470,34 +479,64 @@ int cacheLoad()
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-void* cacheRead(uint64_t off,int len)
+int cacheRead(uint64_t off,char* pbuf,int len)
 {
-	static char buffer[NCACHE_ESIZE];
 	int ret;
 	hash_entry* entry;
 	uint64_t block = off/NCACHE_BSIZE;
 	DB* db = hash_used;
 	
+	lseek(mirror,off,SEEK_SET);
+	if( read(mirror,pbuf,len) != len ) {
+		syslog(LOG_ERR,"Read error = %d",errno);
+		return False;
+	}
+	return True;
+}
+
+int cacheVerify(uint64_t off,char* pbuf,int len)
+{
+	int ret;
+	hash_entry* entry;
+	uint64_t block = off/NCACHE_BSIZE;
+	DB* db = hash_used;
+	char ploc[NCACHE_ESIZE];
+	
 	key.data = &block;
 	key.size = sizeof(block);
 	
-	ret = db->get(hash_used,NULL,&key,&val,0);
-	if( ret != 0 ) {
-		db = hash_dirty;
-		ret = db->get(hash_dirty,NULL,&key,&val,0);
+	while( len > 0 ) {
+	
+		ret = db->get(hash_used,NULL,&key,&val,0);
 		if( ret != 0 ) {
-			syslog(LOG_ALERT,"Block not in cache");
-			return NULL;
+			db = hash_dirty;
+			ret = db->get(hash_dirty,NULL,&key,&val,0);
+			if( ret != 0 ) {
+			
+				syslog(LOG_ALERT,"Block not in cache");
+				return False;
+			}
 		}
+		entry = (hash_entry*)(val.data);
+		//syslog(LOG_INFO,"Block: %lld, Slot: %ld",(unsigned long long)block,(unsigned long)entry->slot);
+		//entry->usecount++;
+	
+		ret=lseek(cache,data_offset + (NCACHE_ESIZE*entry->slot),SEEK_SET);
+		if(ret==-1) {
+			syslog(LOG_ERR,"Error seeking slot [%lld] for block [%lld]",(unsigned long long)entry->slot,(unsigned long long)(off/NCACHE_BSIZE));
+			return False;
+		}
+		if( read(cache,ploc,NCACHE_ESIZE) != NCACHE_ESIZE ) {
+			syslog(LOG_ALERT,"Read error, err=%d",errno);	
+			return False;									
+		}
+		memcpy(pbuf,ploc+sizeof(cache_entry),NCACHE_BSIZE);
+		len -= NCACHE_BSIZE;
+		pbuf += NCACHE_BSIZE;
+		block++;
 	}
-	entry = (hash_entry*)(val.data);
-	entry->usecount++;
-	
-	DATA_SEEK(entry->slot,"READ");
-	READ_BLOCK(entry->slot,buffer);
-	SAVE_CACHE(db);
-	
-	return (buffer+sizeof(cache_entry));
+	//SAVE_CACHE(db);
+	return True;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -521,31 +560,106 @@ void cacheAlignBlock(int *len)
 	if( size != *len ) *len = size + NCACHE_BSIZE;
 }
 
-int cacheWrite(uint64_t off, int len, void* data)
+
+int hashUpdate(uint64_t block,uint32_t slot)
 {
-	hash_entry 		new_entry,*entry;
-	char*			buffer,*ptr;
-	DB* 			db;
-	int				count,ret,siz;
-	cache_entry		*iptr;
+	DB* 		db = hash_used;
+	int 		ret;
+	hash_entry	new_entry,*entry;
+	
+	key.data = &block;
+	key.size = sizeof(block);		
+	ret = db->get(db,NULL,&key,&val,0);
+	if( ret != 0 ) {
+		db = hash_dirty;
+		ret = db->get(db,NULL,&key,&val,0);
+	}
+	if(ret == 0) {	
+		if( db != hash_dirty ) {
+			db->del(db,NULL,&key,0);
+		}
+		// Free old slot !
+		entry = (hash_entry*)val.data;
+		//syslog(LOG_INFO,"Need to free slot (%d)",entry->slot);
+	} else {
+		entry = &new_entry;
+		entry->block 	= block;
+		entry->usecount = 0;
+		val.data 			= entry;
+		val.size 			= sizeof(new_entry);
+	}
+	entry->slot		= slot;
+	entry->dirty 	= DIRTY;
+	entry->usecount++;
+	
+	if( db->put(db,NULL,&key,&val,0) !=0)
+		syslog(LOG_ALERT,"Error updating hash for block %lld",(unsigned long long)block);
+		
+	return entry->usecount;
+}
+
+int cacheWrite(uint64_t off, char* sptr, int len)
+{
 	uint64_t		block = off/NCACHE_BSIZE;
 	uint32_t		slot;
-
-	cacheAlignBlock(&len);	
-			
-	syslog(LOG_INFO,"cacheWrite :: off=%lld, len=%d, data=%llx",(unsigned long long)off,len,(unsigned long long)data);
+	int				count,size;
+	char			*wbuf,*wptr;
+	cache_entry		*iptr;
 	
-	hallocBegin();
+	//
+	//	Write a copy of the block to the mirror file
+	//
+	lseek(mirror,off,SEEK_SET);
+	if( write(mirror,sptr,len) == -1 ) {
+		syslog(LOG_ERR,"Write error = %d",errno);
+		return False;
+	}
+	cacheAlignBlock(&len);	
+	while( len > 0 ) {
+		count = len/NCACHE_BSIZE;
+		hallocAllocate(&slot,&count);
+		lseek(cache,data_offset+NCACHE_ESIZE*slot,SEEK_SET);
+		wptr = wbuf = (char*)malloc(NCACHE_ESIZE*count);
+		len -= NCACHE_BSIZE*count;
+		while( count-- ) {
+			//syslog(LOG_ERR,"Count=%d, Slot=%ld",count,(unsigned long)slot);
+			iptr = (cache_entry*)wptr;
+			iptr->block 	= block;
+			iptr->dirty 	= DIRTY;
+			iptr->usecount	= hashUpdate(block,slot);
+			wptr += sizeof(cache_entry);
+			memcpy(wptr,sptr,NCACHE_BSIZE);
+			wptr += NCACHE_BSIZE;
+			sptr += NCACHE_BSIZE;
+			block++;
+			slot++;
+		}
+		size = wptr - wbuf;
+		if( write(cache,wbuf,size) != size) {
+			syslog(LOG_ALERT,"Write error, err=%d",errno);	
+			return False;									
+		}																
+		free(wbuf);
+	}
+	return True;
+}
+	
+	
+/*			
+	//syslog(LOG_INFO,"cacheWrite :: off=%lld, len=%d, data=%llx",(unsigned long long)off,len,(unsigned long long)data);
+	
+	//hallocBegin();
 	while( len > 0) {
 		count = len/NCACHE_BSIZE;
-		//allocateFree(&slot,&count);
-		hallocAllocate(&slot,&count);
+		//hallocAllocate(&slot,&count);
+		count = 1;
 		ptr = buffer = (char*)malloc(count*NCACHE_ESIZE);
 		len -= count*NCACHE_BSIZE;
 		
-		DATA_SEEK(slot,"WRITE");
+		//syslog(LOG_INFO,"Buffer=%lld,Max=%lld",(unsigned long long)ptr,(unsigned long long)(ptr+(count*NCACHE_ESIZE)));
+		
 		while(count--) {
-			syslog(LOG_INFO,"Loop on slot %d, block %lld",(int)slot,(unsigned long long)block);
+			//syslog(LOG_INFO,"%d:Loop on slot %d, block %lld",count,(int)slot,(unsigned long long)block);
 			db = hash_used;
 			key.data = &block;
 			key.size = sizeof(block);		
@@ -560,16 +674,17 @@ int cacheWrite(uint64_t off, int len, void* data)
 				}
 				// Free old slot !
 				entry = (hash_entry*)val.data;
-				syslog(LOG_INFO,"Need to free slot (%d)",entry->slot);
-				hallocFree(entry->slot);
+				//syslog(LOG_INFO,"Need to free slot (%d)",entry->slot);
+				//hallocFree(entry->slot);
 			} else {
 				entry = &new_entry;
 				entry->block 	= block;
 				entry->usecount = 0;
+				entry->slot = *--freeq_next;
 				val.data 		= entry;
 				val.size 		= sizeof(new_entry);
 			}
-			entry->slot  = slot;			
+			//entry->slot  = slot;			
 			entry->dirty = DIRTY;
 			entry->usecount++;
 			SAVE_CACHE(hash_dirty);
@@ -580,17 +695,26 @@ int cacheWrite(uint64_t off, int len, void* data)
 			iptr->usecount	= entry->usecount;
 			ptr += sizeof(cache_entry);
 			memcpy(ptr,data,NCACHE_BSIZE);
-			ptr  += NCACHE_BSIZE;
-			data += NCACHE_BSIZE;
-			block++;
-			slot++;
+			//ptr  += NCACHE_BSIZE;
+			//data += NCACHE_BSIZE;
+			//block++;
+			//slot++;
+			
+			lseek(cache,data_offset + (entry->slot*NCACHE_ESIZE),SEEK_SET);
+			if( write(cache,buffer,NCACHE_ESIZE) != NCACHE_ESIZE) {
+				syslog(LOG_ALERT,"Write error, err=%d",errno);	
+				return False;									
+			}																
 		}
-		DATA_SAVE(buffer,ptr-buffer);
+		
+		//DATA_SAVE(buffer,ptr-buffer);
 		free(buffer);
 	}
-	hallocEnd();
+	//hallocEnd();
 	return True;
 }
+*/
+
 
 //	key.data = &block;
 //	key.size = sizeof(block);
@@ -699,6 +823,7 @@ int cacheList()
 
 int cacheFlush(uint64_t block,int host)
 {
+	/*
 	hash_entry* entry;
 	key.data = &block;
 	key.size = sizeof(block);
@@ -742,6 +867,7 @@ int cacheFlush(uint64_t block,int host)
 		syslog(LOG_ALERT,"Error updating dirty flag");
 		return False;
 	}
+	*/
 	return True;
 }
 
@@ -878,15 +1004,15 @@ void cacheTest()
 	
 	memset(buffer,0,sizeof(buffer));
 	bytes = read(fd,buffer,sizeof(buffer));
-	cacheWrite(off,bytes,&buffer);
+	//cacheWrite(off,bytes,&buffer);
 	
 	void* data;
 	off=NCACHE_BSIZE*1000;
 	len=bytes;
 
 	while( len > 0) {
-		data = cacheRead(off,NCACHE_BSIZE);
-		printf("%s",(char*)data);
+		cacheRead(off,buffer,NCACHE_BSIZE);
+		printf("%s",buffer);
 		len -= NCACHE_BSIZE;
 		off += NCACHE_BSIZE;
 	}
