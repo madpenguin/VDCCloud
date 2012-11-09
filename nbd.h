@@ -223,3 +223,7 @@ struct thread_info {    /* Used as argument to thread_start() */
 
 uint64_t ntohll(uint64_t);
 int cacheRead(uint64_t,char*,int);
+
+#define PUT_DIRTY \
+	if(hash_dirty->put(hash_dirty,NULL,&key,&val,0)!=0) \
+	syslog(LOG_ALERT,"ERR :: PUT_DIRTY :: block [%lld]",*(unsigned long long*)val.data);

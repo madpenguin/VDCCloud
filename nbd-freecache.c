@@ -15,6 +15,7 @@ typedef struct hallocEntry {
 
 hallocEntry *hstore[MAX_CHUNK];
 uint32_t hstart,hlast,hentries;
+uint64_t hblock;
 
 void hallocStats()
 {
@@ -47,37 +48,32 @@ void hallocAllocate(uint32_t *slot,int *count)
 	hallocEntry *entry;
 	
 	//syslog(LOG_INFO,"halloc, requested %d",*count);	
-	
 	assert(*count<MAX_CHUNK); // make sure we're not asking too much
 	while( !hstore[i] && (i<MAX_CHUNK)) i++;
-	if(i==MAX_CHUNK) {
-		while( !hstore[i] && (i>0)) i--;
-	}
-	if(!hstore[i]) {
-		hallocStats();
-		return;
-	}
+	if(i==MAX_CHUNK) while( !hstore[i] && (i>0)) i--;
+
+	if(!hstore[i]) { syslog(LOG_ALERT,"Ran out of cache"); assert(0); }
+	
 	entry = hstore[i];
 	hstore[i] = entry->next;
 	*slot = entry->start;
 	
-	if(*count>=i) {
-		*count = i;
-		free(entry);
-		return;
-	}
-	//syslog(LOG_INFO,"halloc, split %ld, %d",(unsigned long)*slot,*count);	
-	//hallocFlush(i-*count,entry->start + *count);
+	if(*count>=i) *count = i;
+	else hallocFlush(i-*count,entry->start + *count);
 	free(entry);
+	//syslog(LOG_INFO,"halloc, split %ld, %d",(unsigned long)*slot,*count);	
 }
 
-void hallocFree(uint32_t slot)
+void hallocFree(uint32_t slot,uint64_t block)
 {
 	if( (slot != hlast+1) || (hentries == MAX_CHUNK-1) ) {
 		if( hentries ) {
-			hallocFlush(hentries,hstart);
+			//hallocFlush(hentries,hstart);
+			syslog(LOG_INFO,"hallocFree, slot %ld, entries %ld, block %lld",
+				   (unsigned long)hstart,(unsigned long)hentries,
+				   (unsigned long long)hblock);
 		}
-		hstart = slot; hentries = 0;
+		hstart = slot; hentries = 0; hblock = block;
 	}
 	hentries++;
 	hlast = slot;
@@ -85,19 +81,23 @@ void hallocFree(uint32_t slot)
 
 void hallocBegin()
 {
-	hstart = 0; hlast = 0; hentries = 0;
+	hstart = 0; hlast = -1; hentries = 0;
 }
 
 void hallocEnd()
 {
-	hallocFree(-1);
+	if(hentries) {
+			syslog(LOG_INFO,"hallocFree, slot %ld, entries %ld, block %lld",
+				   (unsigned long)hstart,(unsigned long)hentries,
+				   (unsigned long long)hblock);		
+	}
 }
 
 void hallocLoad(void* base,int count)
 {
 	syslog(LOG_INFO,"Max Slot = %d",count);
 	
-	int slot, last = 0 , start = 0 ,entries = 0;
+	uint32_t slot, last = 0 , start = 0 ,entries = 0;
 	int i; for(i=0;i<MAX_CHUNK;i++) { hstore[i]=NULL; }
 	
 	cache_entry *ptr = (cache_entry*)base;

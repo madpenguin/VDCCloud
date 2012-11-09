@@ -701,101 +701,59 @@ void doSession(int sock)
 				case NBD_READ:
 					putBytes(sock,&reply,sizeof(reply));
 					bufp = (char*)malloc(len);
-					if(!cacheRead(off,bufp,len)) syslog(LOG_ERR,"cacheRead error");
-					sum1 = computeChecksum((uint64_t*)bufp,len);
-					putBytes(sock,bufp,len);
-					
-					bufq = (char*)malloc(len);
-					if(!cacheVerify(off,bufq,len)) syslog(LOG_ERR,"cacheVerify error");
-					sum2 = computeChecksum((uint64_t*)bufq,len);
-				
-					if(sum1!=sum2) {
-						for(i=0;i<len;i++) if(bufp[i]!=bufq[i])break;
-						syslog(LOG_ALERT,"READ CHECKSUM BAD *** %lld, matching first %d of %d",
-							   (unsigned long long)off/NCACHE_BSIZE,i,len);
+					if(!cacheRead(off,bufp,len)) {
+						syslog(LOG_ALERT,"%% Cache Read error on block %lld %%",(unsigned long long)block);
+						memset(bufp,0,len);
 					}
-					free(bufp); free(bufq);
+					putBytes(sock,bufp,len);
+					free(bufp); // DOUBLE FREE HERE!!
 					break;
-					
-					//while( len > 0 ) {
-					//	block = off/NCACHE_BSIZE;
-					//	syslog(LOG_INFO,"NBD_READ block %lld",(unsigned long long)block);
-					//	readlen = len > sizeof(buffer)?sizeof(buffer):len;						
-					//	bufp = (char*)cacheRead(off,buffer,readlen);
-					//	if(!bufp) {
-					//		syslog(LOG_ERR,"No data for block %lld",(unsigned long long)block);
-					//		memset(buffer,0,sizeof(buffer));
-					//		bufp=buffer;
-					//	}
-					//	putBytes(sock,bufp,NCACHE_BSIZE);
-					//	len -= NCACHE_BSIZE;
-					//}
-					//break;
-	
-				
-					//while( len > 0 ) {
-					//	bufp = (char*)cacheRead(block);
-					//	if(!bufp) {
-							//if(lseek(h1,off,SEEK_SET)==-1) running = doError("SEEK");							
-							//bytes = read(h1,&buffer,readlen);
-							//if( bytes != readlen ) {
-							//	running = doError("READ");
-							//	break;
-							//}
-					//		memset(&buffer,0,sizeof(buffer));
-					//		if(!cacheWrite(block,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
-					//		bufp = buffer;
-					//	}
-					//	putBytes(sock,bufp,NCACHE_BSIZE);
-                    //   len -= NCACHE_BSIZE;
-                    //    block++;
-                        //h3 = h1;
-                        //h1 = h2;
-                        //h2 = h3;
-					//}
-					//break;
-                
+
 			case NBD_WRITE:
 				bufp = (char*)malloc(len);
-				getBytes(sock,bufp,len);
-				
+				getBytes(sock,bufp,len);			
 				sum1 = computeChecksum((uint64_t*)bufp,len);
-				
-				cacheWrite(off,bufp,len);
-				putBytes(sock,&reply,sizeof(reply));
-				
-				bufq = (char*)malloc(len);
-				cacheVerify(off,bufq,len);
-				sum2 = computeChecksum((uint64_t*)bufq,len);
-				
-				if(sum1!=sum2) {
-						syslog(LOG_ALERT,"CHECKSUM BAD *** %lld",(unsigned long long)off/NCACHE_BSIZE);
-						entry1 = (cache_entry*)bufp;
-						entry2 = (cache_entry*)bufq;
-						syslog(LOG_INFO,"Block[%lld:%lld],UserCount[%d:%d],Dirty[%d:%d]",
-							   (unsigned long long)entry1->block,(unsigned long long)entry2->block,
-							   entry1->usecount,entry2->usecount,
-							   entry1->dirty,entry2->dirty);
+				if(!cacheWrite(off,bufp,len)) {
+					syslog(LOG_ALERT,"%% Cache Write error on block %lld %%",(unsigned long long)block);
+					memset(bufp,0,len);
 				}
-				//else	syslog(LOG_ALERT,"CHECKSUM OK  :: %lld",(unsigned long long)off/NCACHE_BSIZE);
-				
-				free(bufp); free(bufq);
+				putBytes(sock,&reply,sizeof(reply));				
+				if(!cacheRead(off,bufp,len)) {				
+						syslog(LOG_ALERT,"%% Cache Read error on block %lld %%",(unsigned long long)block);
+						memset(bufp,0,len);
+				}
+				sum2 = computeChecksum((uint64_t*)bufp,len);
+				if(sum1!=sum2) {
+					syslog(LOG_ALERT,"CHECKSUM BAD *** %lld [%d]",(unsigned long long)off/NCACHE_BSIZE,len);
+				}			
+				free(bufp);
 				break;
 			
-				//block = off/NCACHE_BSIZE;
-				//syslog(LOG_INFO,"NBD_WRITE, block=%lld,len=%ld",(unsigned long long)block,(unsigned long)len);
-				//while( len > 0 ) {
-				//	block = off/NCACHE_BSIZE;
-				//	readlen = len > sizeof(buffer)?sizeof(buffer):len;
-				//	readlen = NCACHE_BSIZE;
-				//	getBytes(sock,&buffer,readlen);
-				//	if(!cacheWrite(off,readlen,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
-				//	off += readlen;
-				//	len -= readlen;
-				//}
-				//putBytes(sock,&reply,sizeof(reply));
-				//break;
-
+			case NBD_CLOSE:
+				//putBytes(&reply,sizeof(reply));
+				cacheClose(dev);													
+				running = False;
+				break;
+			
+			case NBD_TRIM:
+				// FIXME :: TRIM Code needed
+				putBytes(sock,&reply,sizeof(reply));
+				break;
+				
+			case NBD_FLUSH:
+				// FIXME :: FLUSH Code needed
+				putBytes(sock,&reply,sizeof(reply));
+				break;
+                
+			default:
+				doError("Unknown Command");
+			}	
+		} while( running );          
+	}
+	if(dbm) close(dbm);
+	doLog("Exit SESSION");
+}
+			// OLD WRITE
 				//while( len > 0 ) {
 				 //   getBytes(sock,&buffer,NCACHE_BSIZE);
 				//	if(!cacheWrite(block,&buffer))
@@ -822,31 +780,33 @@ void doSession(int sock)
 				//	}
 					//putBytes(sock,&reply,sizeof(reply));
 					//break;
-            
-			case NBD_CLOSE:
-				//putBytes(&reply,sizeof(reply));
-				cacheClose(dev);													
-				running = False;
-				break;
-			
-			case NBD_TRIM:
-				// FIXME :: TRIM Code needed
-				putBytes(sock,&reply,sizeof(reply));
-				break;
-				
-			case NBD_FLUSH:
-				// FIXME :: FLUSH Code needed
-				putBytes(sock,&reply,sizeof(reply));
-				break;
+
+				// OLD READ				
+					//while( len > 0 ) {
+					//	bufp = (char*)cacheRead(block);
+					//	if(!bufp) {
+							//if(lseek(h1,off,SEEK_SET)==-1) running = doError("SEEK");							
+							//bytes = read(h1,&buffer,readlen);
+							//if( bytes != readlen ) {
+							//	running = doError("READ");
+							//	break;
+							//}
+					//		memset(&buffer,0,sizeof(buffer));
+					//		if(!cacheWrite(block,&buffer)) syslog(LOG_ERR,"Write Error on %lld",(unsigned long long)block);
+					//		bufp = buffer;
+					//	}
+					//	putBytes(sock,bufp,NCACHE_BSIZE);
+                    //   len -= NCACHE_BSIZE;
+                    //    block++;
+                        //h3 = h1;
+                        //h1 = h2;
+                        //h2 = h3;
+					//}
+					//break;
                 
-			default:
-				doError("Unknown Command");
-			}	
-		} while( running );          
-	}
-	if(dbm) close(dbm);
-	doLog("Exit SESSION");
-}
+
+
+
 
 //	doAccept - accept loop for new connections
 
