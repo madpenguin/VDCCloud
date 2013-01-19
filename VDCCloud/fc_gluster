@@ -104,13 +104,17 @@ def isRunning(inst):
 def setParam(inst,dev,param,v):
 	""" set a flashcache parameter """
 	path = "/proc/sys/dev/flashcache/"+inst['name']+"+"+dev+"/"+param
-	if os.path.exists(path):
-		print "["+colored(param,"yellow")+"="+colored(v,"green")+"]",
-		io = open(path,"w")
-		io.write(str(v)+"\n")
-		io.close()
-	else:
-		print "["+colored(path,"red")+"]",
+	while True:
+		if os.path.exists(path):
+			print "["+colored(param,"yellow")+"="+colored(v,"green")+"]",
+			io = open(path,"w")
+			io.write(str(v)+"\n")
+			io.close()
+			return
+
+		print colored(".","red"),
+		if not wait: return
+		time.sleep(1)
 #
 ###############################################################################
 #	
@@ -335,9 +339,10 @@ def do_start():
 				continue
 
 		logMiddle('RA::8192',"blue")
+		sleep(3)
 		if run("blockdev --setra 8192 /dev/mapper/"+name): logMiddle('fail',"red")
-		setParam(inst,dev,"reclaim_policy",1)
-		setParam(inst,dev,"fallow_delay",FALLOW_DELAY)
+		setParam(inst,dev,"reclaim_policy",1,True)
+		setParam(inst,dev,"fallow_delay",FALLOW_DELAY,True)
 		logEnd('Ok',"green")
 #
 ###############################################################################
