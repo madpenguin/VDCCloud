@@ -109,6 +109,8 @@ def setParam(inst,dev,param,v):
 		io = open(path,"w")
 		io.write(str(v)+"\n")
 		io.close()
+	else:
+		print "["+colored(path,"red")+"]",
 #
 ###############################################################################
 #	
