@@ -1,5 +1,8 @@
 VDC - Virtual Data Centre Cloud Platform
 
-This is a set of tools designed to facilitate the management of KVM
-images running on a stack comprising of Flashcache, QEMU-NBD and 
-Gluster 3.3.
+** This project is Obsolete and has been replaced ***
+
+See here for more details;
+http://linuxforums.org.uk/index.php?topic=11284.msg89701#msg89701
+
+A demonstration of this software running with OpenNebula should be live soon ...
